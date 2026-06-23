@@ -1,0 +1,68 @@
+"""FastAPI application entry point — lifespan, middleware, router registration (§15)."""
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from src.api.middleware import RateLimitMiddleware, RequestIDMiddleware, TimingMiddleware
+from src.api.routers import admin, auth_router, documents, query
+from src.config import get_settings
+
+settings = get_settings()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup: verify storage connectivity. Shutdown: close connections."""
+    # Verify MinIO bucket
+    from src.storage.object import get_object_store
+    get_object_store().ensure_bucket()
+
+    # Verify Redis connection
+    from src.storage.cache import get_cache
+    await get_cache().ping()
+
+    yield
+
+    # Cleanup: dispose of async engine
+    from src.db.session import engine
+    await engine.dispose()
+
+
+app = FastAPI(
+    title=settings.app_name,
+    description="Multi-tenant Agentic RAG Platform — local-first, provider-agnostic",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/docs" if settings.debug else None,
+    redoc_url="/redoc" if settings.debug else None,
+)
+
+# ── Middleware (order matters — outermost wraps all) ──────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # tighten in prod — set to frontend domain(s)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.add_middleware(TimingMiddleware)
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(RequestIDMiddleware)
+
+# ── Routers ───────────────────────────────────────────────────────────────────
+app.include_router(auth_router.router)
+app.include_router(documents.router)
+app.include_router(query.router)
+app.include_router(admin.router)
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "service": settings.app_name}
+
+
+@app.get("/")
+async def root():
+    return {"message": f"Welcome to {settings.app_name}. See /docs for API reference."}

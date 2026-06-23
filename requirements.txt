@@ -1,0 +1,52 @@
+# ── Core ─────────────────────────────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+python-jose[cryptography]>=3.3.0   # JWT
+passlib[bcrypt]>=1.7.4             # password hashing
+
+# ── LLM providers ─────────────────────────────────────────────────────────────
+openai>=1.40.0          # used by: Groq, OpenAI, Azure OpenAI, Ollama (all OpenAI-compatible)
+anthropic>=0.34.0       # used by: Claude
+
+# ── Local ML (embeddings + reranker) ─────────────────────────────────────────
+sentence-transformers>=3.1.0
+torch>=2.3.0            # CPU-only is fine for embed/rerank
+
+# ── Vector DB ────────────────────────────────────────────────────────────────
+qdrant-client>=1.11.0
+
+# ── Object storage (MinIO / S3-compatible) ────────────────────────────────────
+boto3>=1.35.0
+
+# ── Database ─────────────────────────────────────────────────────────────────
+asyncpg>=0.29.0         # async Postgres driver
+sqlalchemy[asyncio]>=2.0.0
+alembic>=1.13.0
+
+# ── Cache / queue ─────────────────────────────────────────────────────────────
+redis>=5.0.0
+celery[redis]>=5.4.0
+
+# ── Document parsing ──────────────────────────────────────────────────────────
+pymupdf>=1.24.0         # PyMuPDF — fast text-native PDFs
+marker-pdf>=0.3.0       # Marker — complex PDFs, scanned docs, tables
+python-docx>=1.1.0      # DOCX parsing
+python-pptx>=0.6.23     # PPTX parsing
+pytesseract>=0.3.10     # OCR fallback for images
+Pillow>=10.0.0          # Image handling
+httpx>=0.27.0           # HTTP client (Ollama vision calls)
+
+# ── Sparse retrieval ──────────────────────────────────────────────────────────
+rank-bm25>=0.2.2        # BM25 sparse retrieval
+
+# ── Observability ─────────────────────────────────────────────────────────────
+opentelemetry-api>=1.25.0
+opentelemetry-sdk>=1.25.0
+opentelemetry-exporter-otlp>=1.25.0
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-multipart>=0.0.9  # file upload support in FastAPI
+tenacity>=8.5.0          # retry + circuit breaker
+python-dotenv>=1.0.0
