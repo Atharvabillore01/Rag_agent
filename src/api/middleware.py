@@ -70,11 +70,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return None
         try:
             from jose import jwt
+            # Verify the signature AND expiry. An expired/invalid token must not
+            # be trusted to attribute rate-limit usage to a tenant (it could
+            # poison another tenant's bucket); on failure we fall through to None.
             payload = jwt.decode(
                 auth[7:],
                 settings.secret_key,
                 algorithms=["HS256"],
-                options={"verify_exp": False},  # just reading tenant_id, not validating
             )
             return payload.get("tenant_id")
         except Exception:

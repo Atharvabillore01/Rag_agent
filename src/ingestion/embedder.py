@@ -45,6 +45,14 @@ async def embed_and_index(
     if not chunks:
         return
 
+    # Idempotent re-ingestion: remove any existing vectors for this document
+    # first. Point IDs are uuid5(document_id:chunk_index) and are version-agnostic,
+    # so a re-ingest that produces FEWER chunks would otherwise leave the old
+    # higher-index vectors orphaned in Qdrant (still tagged ready, still returned
+    # by search). Deleting first guarantees Qdrant exactly matches this run.
+    # No-op for a brand-new document (delete_by_document guards collection_exists).
+    await vector_store.delete_by_document(tenant_id, document_id)
+
     # Only index leaf chunks (children, or single-chunk parents with no children).
     # Parent chunks are stored in Postgres for context lookup but not in Qdrant —
     # indexing both doubles storage and pollutes retrieval with redundant text.
@@ -63,14 +71,7 @@ async def embed_and_index(
         texts = [c.text for c in batch]
         batch_end = min(batch_start + len(batch), len(indexable))
         logger.info(
-            "embedding batch",
-            extra={
-                "document_id": document_id,
-                "tenant_id": tenant_id,
-                "batch_start": batch_start,
-                "batch_end": batch_end,
-                "total_chunks": len(indexable),
-            },
+            f"[{document_id}] stage=embed  embedding {batch_end}/{len(indexable)} chunks"
         )
 
         embed_resp = await embedder.embed(texts)
@@ -107,12 +108,5 @@ async def embed_and_index(
 
         await vector_store.upsert(tenant_id, points)
         logger.info(
-            "vector upsert completed",
-            extra={
-                "document_id": document_id,
-                "tenant_id": tenant_id,
-                "batch_start": batch_start,
-                "batch_end": batch_end,
-                "points": len(points),
-            },
+            f"[{document_id}] stage=index  upserted {batch_end}/{len(indexable)} vectors"
         )

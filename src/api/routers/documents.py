@@ -1,9 +1,12 @@
 """Document upload and management endpoints (§3, §15.1)."""
 
+import asyncio
+import json
 import logging
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,7 +15,7 @@ from src.api.auth import require_editor, require_viewer
 from src.api.deps import get_object_store_dep, get_vector_store_dep
 from src.config import get_settings
 from src.db.models import Document, DocumentStatus, Tenant, User
-from src.db.session import get_db
+from src.db.session import AsyncSessionLocal, get_db
 from src.ingestion.parsers.router import detect_file_type
 from src.storage.object import ObjectStore, sha256_of_bytes
 from src.storage.vector import VectorStore
@@ -220,6 +223,85 @@ async def get_document(
         page_count=doc.page_count,
         created_at=doc.created_at.isoformat(),
     )
+
+
+# Statuses at which ingestion is finished (success or failure) — the SSE stream
+# emits a final event and closes once one of these is reached.
+_TERMINAL_STATUSES = {
+    DocumentStatus.ready,
+    DocumentStatus.ready_with_warnings,
+    DocumentStatus.failed_retryable,
+    DocumentStatus.failed_terminal,
+    DocumentStatus.rejected_security,
+    DocumentStatus.quota_exceeded,
+}
+
+
+@router.get("/{document_id}/events")
+async def stream_document_events(
+    document_id: str,
+    current_user: User = Depends(require_viewer),
+):
+    """Server-Sent Events stream of live ingestion progress for one document.
+
+    Polls the document's status (updated by the worker at every stage:
+    parsing → chunking → embedding → indexing → ready) and emits a `status`
+    event whenever it changes, then a `done` event once a terminal status is
+    reached. Closes automatically — clients should reconnect only for docs that
+    are still in progress.
+    """
+    tenant_id = current_user.tenant_id
+
+    async def event_generator():
+        last_status: str | None = None
+        seq = 0
+        # Hard cap so a stuck ingestion can't hold the connection forever.
+        for _ in range(600):  # 600 * 1s ≈ 10 min
+            async with AsyncSessionLocal() as db:
+                row = await db.execute(
+                    select(Document.status, Document.failure_reason).where(
+                        Document.id == document_id,
+                        Document.tenant_id == tenant_id,
+                    )
+                )
+                rec = row.first()
+
+            if rec is None:
+                yield _doc_event("error", {"message": "Document not found"}, seq)
+                return
+
+            status, failure_reason = rec
+            status_value = status.value
+
+            if status_value != last_status:
+                seq += 1
+                yield _doc_event(
+                    "status",
+                    {"document_id": document_id, "status": status_value,
+                     "failure_reason": failure_reason},
+                    seq,
+                )
+                last_status = status_value
+
+            if status in _TERMINAL_STATUSES:
+                seq += 1
+                yield _doc_event("done", {"document_id": document_id, "status": status_value}, seq)
+                return
+
+            await asyncio.sleep(1.0)
+
+        # Timed out without reaching a terminal state.
+        yield _doc_event("done", {"document_id": document_id, "status": last_status, "timeout": True}, seq + 1)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _doc_event(event_type: str, data: dict, seq: int) -> str:
+    return f"data: {json.dumps({'event_type': event_type, 'seq': seq, **data})}\n\n"
 
 
 @router.get("/{document_id}/view-url")

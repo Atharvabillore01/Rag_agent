@@ -1,5 +1,9 @@
 from functools import lru_cache
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_INSECURE_SECRET = "change-me-in-production"
 
 
 class Settings(BaseSettings):
@@ -12,9 +16,23 @@ class Settings(BaseSettings):
     # ── App ──────────────────────────────────────────────────────────────────
     app_name: str = "Agentic RAG Platform"
     debug: bool = False
-    secret_key: str = "change-me-in-production"
+    secret_key: str = _INSECURE_SECRET
     access_token_expire_minutes: int = 60 * 24  # 24 h
-    cors_allow_origins: list[str] = ["*"]  # override with ["https://yourapp.com"] in prod
+    # JWTs are signed with secret_key (HS256). Anyone who knows it can forge a
+    # token for any user/tenant/role, so the placeholder default must never be
+    # used to actually run the app — see the validator below.
+    cors_allow_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+
+    @model_validator(mode="after")
+    def _reject_insecure_secret(self) -> "Settings":
+        # Fail fast rather than silently signing tokens with a public default.
+        if self.secret_key == _INSECURE_SECRET:
+            raise ValueError(
+                "SECRET_KEY is set to the insecure default. Generate a strong "
+                "value (e.g. `python -c \"import secrets; print(secrets.token_hex(32))\"`) "
+                "and set SECRET_KEY in your .env before starting."
+            )
+        return self
 
     # ── Database ─────────────────────────────────────────────────────────────
     database_url: str = "postgresql+asyncpg://rag:rag@localhost:5432/ragdb"

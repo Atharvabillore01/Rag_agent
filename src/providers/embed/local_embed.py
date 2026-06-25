@@ -1,5 +1,12 @@
 import asyncio
+import os
 from functools import lru_cache
+
+# HuggingFace's Xet transfer backend (us.aws.cdn.hf.co/xet-bridge-us) hangs on
+# some networks, stalling both model downloads and the on-load update check.
+# Force plain HTTP, which is reliable. Must be set before sentence_transformers
+# / huggingface_hub is imported (done lazily inside _load_model below).
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 from src.providers.base import EmbedProvider, EmbedResponse
 
