@@ -93,6 +93,13 @@ class VectorStore:
         Per-tenant collection (`tenant_{id}`) already provides tenant isolation so
         no tenant_id filter is needed at the Qdrant level.
         """
+        # A tenant who has never completed an ingestion has no collection yet.
+        # Querying a missing collection makes Qdrant raise; return no results so
+        # the agent loop degrades to "couldn't find relevant information" instead
+        # of aborting the whole query with an error.
+        if not await self._client.collection_exists(self.collection_name(tenant_id)):
+            return []
+
         must: list = [
             FieldCondition(key="document_status", match=MatchValue(value="ready")),
         ]

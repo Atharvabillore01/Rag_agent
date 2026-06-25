@@ -1,5 +1,11 @@
 import asyncio
+import os
 from functools import lru_cache
+
+# HuggingFace's Xet transfer backend hangs on some networks, stalling both model
+# downloads and the on-load update check. Force plain HTTP. Must be set before
+# sentence_transformers / huggingface_hub is imported (done lazily in _load_model).
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 from src.providers.base import RerankProvider, RerankResult
 

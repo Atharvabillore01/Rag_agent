@@ -14,7 +14,8 @@ anthropic>=0.34.0       # used by: Claude
 # ── Local ML (embeddings + reranker) ─────────────────────────────────────────
 --extra-index-url https://download.pytorch.org/whl/cpu
 sentence-transformers>=3.1.0
-torch==2.12.1+cpu      # CPU-only wheel for Docker and local development
+torch==2.12.1+cpu ; sys_platform == "linux"    # CPU-only wheel for Docker (Linux)
+torch==2.12.1 ; sys_platform == "darwin"       # macOS wheel has no +cpu suffix (already CPU/MPS)
 
 # ── Vector DB ────────────────────────────────────────────────────────────────
 qdrant-client>=1.11.0

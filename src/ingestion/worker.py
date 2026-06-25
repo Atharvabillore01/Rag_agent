@@ -1,6 +1,17 @@
 """Celery ingestion worker — durable state machine with per-stage checkpoints (§3.5)."""
 
+import os
+
+# macOS fork safety: Celery's prefork pool fork()s worker children, and native
+# libraries used by PyTorch / sentence-transformers (Objective-C runtime, OpenMP)
+# abort with SIGABRT when first initialised in a forked process. This env var
+# must be set before the pool forks (i.e. at import, before Celery starts).
+# Harmless on Linux/Docker. See also the threads-pool note in the run command.
+os.environ.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
+
+import asyncio
 import logging
+import sys
 import time
 from datetime import datetime, timezone
 
@@ -27,9 +38,13 @@ celery_app.conf.update(
     accept_content=["json"],
     timezone="UTC",
     task_track_started=True,
+    # Keep Celery from replacing the root logger we configured in
+    # configure_logging("ingestion") above. Without this, Celery hijacks the
+    # root logger on worker startup and our stage logs never reach
+    # logs/ingestion.log (only Celery's internal noise does).
+    worker_hijack_root_logger=False,
     task_acks_late=True,         # re-queue on worker crash
     worker_prefetch_multiplier=1,
-    worker_autoscale=f"{settings.celery_max_concurrency},{settings.celery_min_concurrency}",
     task_routes={
         "src.ingestion.worker.run_ingestion_pipeline": {
             "queue": settings.ingestion_fast_queue
@@ -37,7 +52,32 @@ celery_app.conf.update(
     },
 )
 
+# Pool selection is platform-dependent:
+#   - macOS: the default prefork pool fork()s children, and PyTorch's Metal/MPS
+#     backend (and other native libs) abort with SIGABRT when initialised in a
+#     forked process. The solo pool runs tasks in the main process (no fork).
+#   - Linux/Docker: fork is safe, so use prefork + autoscale for throughput.
+# Each worker process keeps one persistent event loop (see _loop), so a single
+# task at a time per process is assumed — solo and prefork both satisfy that.
+if sys.platform == "darwin":
+    celery_app.conf.worker_pool = "solo"
+else:
+    celery_app.conf.worker_autoscale = (
+        f"{settings.celery_max_concurrency},{settings.celery_min_concurrency}"
+    )
+
 logger = get_task_logger(__name__)
+
+# One persistent event loop per worker process, reused across all tasks. Creating
+# a fresh loop per task stranded module-level async singletons (the SQLAlchemy
+# engine pool, the Qdrant async client) on the first task's loop, so every later
+# task failed with "got Future attached to a different loop". A single long-lived
+# loop binds those singletons once and reuses them. Safe for the solo pool and for
+# prefork (each forked child is its own process with its own loop). NOTE: this
+# assumes one task at a time per process — do not use a threads pool with
+# concurrency > 1, which would drive this loop from multiple threads at once.
+_loop = asyncio.new_event_loop()
+asyncio.set_event_loop(_loop)
 
 
 def _now() -> datetime:
@@ -68,25 +108,19 @@ def run_ingestion_pipeline(
     Each stage writes a checkpoint row in ingestion_jobs so retries can
     resume from the last successful stage.
     """
-    import asyncio
-
-    # Use a fresh event loop so we never collide with any loop the Celery
-    # worker process may have running (e.g. from gevent/eventlet pools).
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(
-            _async_pipeline(
-                task=self,
-                document_id=document_id,
-                tenant_id=tenant_id,
-                storage_path=storage_path,
-                file_type=file_type,
-                ingestion_version=ingestion_version,
-                collection_tags=collection_tags,
-            )
+    # Reuse the process-wide persistent loop (see _loop above) so module-level
+    # async singletons survive across tasks.
+    _loop.run_until_complete(
+        _async_pipeline(
+            task=self,
+            document_id=document_id,
+            tenant_id=tenant_id,
+            storage_path=storage_path,
+            file_type=file_type,
+            ingestion_version=ingestion_version,
+            collection_tags=collection_tags,
         )
-    finally:
-        loop.close()
+    )
 
 
 async def _async_pipeline(
@@ -98,7 +132,7 @@ async def _async_pipeline(
     ingestion_version: int,
     collection_tags: list[str] | None,
 ) -> None:
-    from sqlalchemy import update
+    from sqlalchemy import delete, update
 
     from src.db.models import Document, DocumentStatus, IngestionJob, IngestionStage
     from src.db.session import AsyncSessionLocal
@@ -154,10 +188,20 @@ async def _async_pipeline(
             parsed = parse_document(raw_bytes, file_type)
             has_warnings = bool(parsed.warnings)
             logger.info(
-                f"[{document_id}] stage=parse  done  pages={getattr(parsed, 'page_count', '?')}"
+                f"[{document_id}] stage=parse  done  pages={len(parsed.pages)}"
                 f"  warnings={len(parsed.warnings)}  runtime={_elapsed(t)}"
             )
             await _checkpoint(IngestionStage.parsing)
+
+            # Persist page_count so the API / UI can show it (otherwise
+            # Document.page_count stays NULL forever). ParsedDocument has no
+            # page_count field — the count is the number of parsed pages.
+            page_count = len(parsed.pages) if parsed.pages else None
+            if page_count is not None:
+                await db.execute(
+                    update(Document).where(Document.id == document_id).values(page_count=page_count)
+                )
+                await db.commit()
 
             # ── Stage 3: Chunk ─────────────────────────────────────────────
             await _set_status(DocumentStatus.chunking)
@@ -176,6 +220,13 @@ async def _async_pipeline(
             # All embed providers store it as _model_name (prefixed to avoid
             # collision with pydantic model_config on base classes).
             embed_model = getattr(embed_prov, "_model_name", None) or type(embed_prov).__name__
+
+            # Idempotency: a retry re-runs from stage 1. Chunk ids are random per
+            # run and there is no unique constraint on (document_id, chunk_index),
+            # so without clearing first, every retry would duplicate the entire
+            # chunk set. Delete any chunks from a previous attempt before inserting.
+            await db.execute(delete(Chunk).where(Chunk.document_id == document_id))
+            await db.commit()
 
             # Build a map from raw chunk index → DB chunk id (for parent linking)
             chunk_index_to_id: dict[int, str] = {}
@@ -214,16 +265,16 @@ async def _async_pipeline(
             await _set_status(DocumentStatus.embedding)
             await _checkpoint(IngestionStage.embedding)
 
-            # Flip Postgres status to ready BEFORE indexing into Qdrant.
-            # This guarantees that Qdrant's document_status="ready" payload filter
-            # is always consistent: if Qdrant says ready, Postgres already agrees.
-            # The only race window is Postgres=ready, Qdrant=not-yet-indexed, which
-            # causes a brief empty result — far safer than the reverse (Qdrant says
-            # ready but Postgres hasn't confirmed, exposing in-progress content).
-            final_status = (
-                DocumentStatus.ready_with_warnings if has_warnings else DocumentStatus.ready
-            )
-            await _set_status(final_status)
+            # Mark indexing in progress. The document is flipped to ready/
+            # ready_with_warnings ONLY after embed_and_index succeeds (below).
+            # Doing it before would leave the document marked "ready" in Postgres
+            # while Qdrant holds no vectors if indexing is interrupted (e.g. the
+            # worker is killed or the embed step hangs) — a silent failure that
+            # stays invisible until query time. Vectors are written with payload
+            # document_status="ready", so the retriever's payload filter stays
+            # correct either way; the only cost is a brief window where freshly
+            # upserted vectors are searchable just before Postgres flips to ready.
+            await _set_status(DocumentStatus.indexing)
 
             t = time.perf_counter()
             logger.info(f"[{document_id}] stage=embed_index  model={embed_model}  chunks={len(chunks)}")
@@ -239,6 +290,12 @@ async def _async_pipeline(
             logger.info(f"[{document_id}] stage=embed_index  done  runtime={_elapsed(t)}")
 
             await _checkpoint(IngestionStage.indexing)
+
+            # Vectors are now durably in Qdrant — safe to mark the document ready.
+            final_status = (
+                DocumentStatus.ready_with_warnings if has_warnings else DocumentStatus.ready
+            )
+            await _set_status(final_status)
 
             total_ms = (time.perf_counter() - pipeline_start) * 1000
             logger.info(

@@ -38,12 +38,77 @@ function isProcessing(status) {
   return !['ready','ready_with_warnings','failed_retryable','failed_terminal','rejected_security'].includes(status)
 }
 
-function DocCard({ doc, onDelete }) {
+// Ordered ingestion pipeline shown live while a document is processing.
+const PIPELINE = [
+  { key: 'parsing',   label: 'Parsing'   },
+  { key: 'chunking',  label: 'Chunking'  },
+  { key: 'embedding', label: 'Embedding' },
+  { key: 'indexing',  label: 'Indexing'  },
+]
+
+function stageRank(status) {
+  // map a status to how far along the pipeline it is
+  const order = ['uploaded','scanning','parsing','cleaning','chunking','embedding','indexing','ready']
+  const i = order.indexOf(status)
+  return i === -1 ? order.length : i // ready/terminal => past the end
+}
+
+function LivePipeline({ status }) {
+  const rank = stageRank(status)
+  const failed = status?.startsWith('failed') || status === 'rejected_security'
+  return (
+    <div className="flex flex-col gap-1 mt-1 pl-1 border-l-2 border-slate-100">
+      {PIPELINE.map((stage) => {
+        const sRank = stageRank(stage.key)
+        const done = rank > sRank
+        const active = stage.key === status
+        return (
+          <div key={stage.key} className="flex items-center gap-2 text-[10px]">
+            {done ? (
+              <CheckCircle2 size={11} className="text-emerald-500 flex-shrink-0" />
+            ) : active ? (
+              <Loader2 size={11} className="text-ida-blue animate-spin flex-shrink-0" />
+            ) : failed ? (
+              <AlertCircle size={11} className="text-red-400 flex-shrink-0" />
+            ) : (
+              <div className="w-[11px] h-[11px] rounded-full border border-slate-200 flex-shrink-0" />
+            )}
+            <span className={done ? 'text-emerald-600' : active ? 'text-ida-blue font-medium' : 'text-slate-400'}>
+              {stage.label}{active ? '…' : ''}
+            </span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function DocCard({ doc, onDelete, onComplete }) {
   const [deleting, setDeleting] = useState(false)
-  const sc = STATUS_CONFIG[doc.status] || { label: doc.status, color: 'bg-slate-50 text-slate-600 border-slate-100', dot: 'bg-slate-400' }
+  const [liveStatus, setLiveStatus] = useState(doc.status)
+  const status = liveStatus
+  const sc = STATUS_CONFIG[status] || { label: status, color: 'bg-slate-50 text-slate-600 border-slate-100', dot: 'bg-slate-400' }
   const fc = getFileConfig(doc.file_type)
   const Icon = fc.icon
-  const processing = isProcessing(doc.status)
+  const processing = isProcessing(status)
+
+  // Subscribe to live ingestion events while this document is processing.
+  useEffect(() => {
+    setLiveStatus(doc.status)
+    if (!isProcessing(doc.status)) return
+    const ctrl = new AbortController()
+    let cancelled = false
+    ;(async () => {
+      try {
+        for await (const ev of docsApi.events(doc.document_id, ctrl.signal)) {
+          if (cancelled) break
+          if (ev.status) setLiveStatus(ev.status)
+          if (ev.event_type === 'done') { onComplete?.(); break }
+        }
+      } catch {}
+    })()
+    return () => { cancelled = true; ctrl.abort() }
+  }, [doc.document_id, doc.status, onComplete])
 
   async function handleDelete() {
     if (!confirm(`Delete "${doc.filename}"? This cannot be undone.`)) return
@@ -72,7 +137,8 @@ function DocCard({ doc, onDelete }) {
             {doc.filename}
           </p>
           <p className="text-[11px] text-slate-400 mt-0.5">
-            {doc.file_type?.toUpperCase()} · {doc.page_count ? `${doc.page_count} pages` : 'Processing…'}
+            {doc.file_type?.toUpperCase()}
+            {doc.page_count ? ` · ${doc.page_count} pages` : processing ? ' · Processing…' : ''}
           </p>
         </div>
         <button
@@ -95,6 +161,9 @@ function DocCard({ doc, onDelete }) {
           {new Date(doc.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
         </p>
       </div>
+
+      {/* Live ingestion pipeline */}
+      {processing && <LivePipeline status={status} />}
     </motion.div>
   )
 }
@@ -221,7 +290,7 @@ export default function Documents() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             <AnimatePresence>
               {docs.map((doc) => (
-                <DocCard key={doc.document_id} doc={doc} onDelete={removeDoc} />
+                <DocCard key={doc.document_id} doc={doc} onDelete={removeDoc} onComplete={fetchDocs} />
               ))}
             </AnimatePresence>
           </div>
