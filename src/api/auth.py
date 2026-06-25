@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+import bcrypt as _bcrypt
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,16 +19,12 @@ _settings = get_settings()
 
 ALGORITHM = "HS256"
 
-# bcrypt with auto-rehash on verify — future-proof against cost-factor upgrades
-_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
 def hash_password(password: str) -> str:
-    return _pwd_context.hash(password)
+    return _bcrypt.hashpw(password.encode(), _bcrypt.gensalt()).decode()
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return _pwd_context.verify(plain, hashed)
+    return _bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
 class TokenData(BaseModel):

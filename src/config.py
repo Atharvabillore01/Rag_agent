@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     debug: bool = False
     secret_key: str = "change-me-in-production"
     access_token_expire_minutes: int = 60 * 24  # 24 h
+    cors_allow_origins: list[str] = ["*"]  # override with ["https://yourapp.com"] in prod
 
     # ── Database ─────────────────────────────────────────────────────────────
     database_url: str = "postgresql+asyncpg://rag:rag@localhost:5432/ragdb"
@@ -27,6 +28,8 @@ class Settings(BaseSettings):
     # ── Celery ────────────────────────────────────────────────────────────────
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
+    celery_min_concurrency: int = 2   # idle floor — always-ready workers
+    celery_max_concurrency: int = 20  # peak ceiling — scales up under load
 
     # ── Qdrant ────────────────────────────────────────────────────────────────
     qdrant_host: str = "localhost"
@@ -51,6 +54,7 @@ class Settings(BaseSettings):
     demo_max_retrieval_rounds: int = 2
     agent_retrieval_top_k: int = 20       # candidates before rerank
     agent_rerank_top_n: int = 5           # after rerank
+    agent_doc_metadata_limit: int = 200   # max documents surfaced to planner
     query_cache_ttl_seconds: int = 300    # 5 min query cache in Redis
     stream_buffer_ttl_seconds: int = 900  # 15 min replay buffer
 

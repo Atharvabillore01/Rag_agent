@@ -1,5 +1,6 @@
 """FastAPI middleware — rate limiting, request ID, CORS, audit events (§11, §21)."""
 
+import logging
 import time
 import uuid
 
@@ -10,6 +11,8 @@ from src.config import get_settings
 from src.storage.cache import get_cache
 
 settings = get_settings()
+
+_timing_logger = logging.getLogger("api.timing")
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
@@ -79,11 +82,45 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 
 class TimingMiddleware(BaseHTTPMiddleware):
-    """Add X-Response-Time header for latency monitoring (§11)."""
+    """Add X-Response-Time header and write a structured runtime log line (§11).
+
+    Every request is logged to the ``api.timing`` logger at INFO level:
+        METHOD /path  status=<code>  runtime=<N>ms  request_id=<id>
+
+    Upload requests (POST /documents/upload) are additionally logged at a
+    higher-visibility level so they are easy to grep in logs/api.log:
+        grep "UPLOAD" logs/api.log
+    """
 
     async def dispatch(self, request: Request, call_next) -> Response:
         start = time.perf_counter()
         response = await call_next(request)
         elapsed_ms = (time.perf_counter() - start) * 1000
+
+        # Always set the response header
         response.headers["X-Response-Time"] = f"{elapsed_ms:.1f}ms"
+
+        # Build a structured log line
+        method = request.method
+        path = request.url.path
+        status = response.status_code
+        request_id = getattr(request.state, "request_id", "-")
+        content_length = request.headers.get("content-length", "-")
+
+        log_msg = (
+            f"{method} {path}  status={status}  runtime={elapsed_ms:.1f}ms"
+            f"  request_id={request_id}  content_length={content_length}"
+        )
+
+        is_upload = method == "POST" and path.startswith("/documents/upload")
+
+        if is_upload:
+            # Prominent line so uploads are instantly greppable
+            _timing_logger.info("UPLOAD %s", log_msg)
+            if status >= 400:
+                _timing_logger.warning("UPLOAD_FAILED %s", log_msg)
+        else:
+            _timing_logger.debug(log_msg)
+
         return response
+

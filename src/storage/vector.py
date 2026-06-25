@@ -107,20 +107,29 @@ class VectorStore:
                 FieldCondition(key="document_id", match=MatchAny(any=document_ids))
             )
 
-        results = await self._client.search(
+        response = await self._client.query_points(
             collection_name=self.collection_name(tenant_id),
-            query_vector=query_vector,
+            query=query_vector,
             query_filter=Filter(must=must),
             limit=top_k,
             with_payload=True,
             score_threshold=score_threshold,
         )
-        return [{"id": str(r.id), "score": r.score, **r.payload} for r in results]
+        return [{"id": str(r.id), "score": r.score, **r.payload} for r in response.points]
 
     async def delete_by_document(
         self, tenant_id: str, document_id: str, ingestion_version: int | None = None
     ) -> None:
-        """Delete all vectors for a document (with optional version pinning for replay cleanup)."""
+        """Delete all vectors for a document (with optional version pinning for replay cleanup).
+
+        If the tenant's Qdrant collection does not exist yet (e.g. the document was
+        uploaded but ingestion never completed), there are no vectors to remove and
+        this method returns silently rather than raising a 404.
+        """
+        collection = self.collection_name(tenant_id)
+        if not await self._client.collection_exists(collection):
+            return
+
         must = [FieldCondition(key="document_id", match=MatchValue(value=document_id))]
         if ingestion_version is not None:
             must.append(
@@ -129,7 +138,7 @@ class VectorStore:
                 )
             )
         await self._client.delete(
-            collection_name=self.collection_name(tenant_id),
+            collection_name=collection,
             points_selector=Filter(must=must),
         )
 

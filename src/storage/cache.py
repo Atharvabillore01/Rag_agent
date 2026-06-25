@@ -63,13 +63,19 @@ return current
 
     # ── Demo quota — fast counter in Redis, Postgres is source of truth ───────
 
+    # Same atomic INCR+EXPIRE pattern as rate limiting — avoids a key with no
+    # TTL if the process crashes between the two calls.
+    _DEMO_QUOTA_LUA = """
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return count
+"""
+
     async def incr_demo_queries(self, tenant_id: str) -> int:
         key = f"demo:qpd:{tenant_id}"
-        count = await self._r.incr(key)
-        if count == 1:
-            # Expire at midnight — set TTL to end of day (86400s max)
-            await self._r.expire(key, 86400)
-        return int(count)
+        return int(await self._r.eval(self._DEMO_QUOTA_LUA, 1, key, 86400))
 
     async def get_demo_queries_today(self, tenant_id: str) -> int:
         val = await self._r.get(f"demo:qpd:{tenant_id}")
@@ -80,10 +86,17 @@ return current
 
     # ── Stream event replay buffer (§8.2) ────────────────────────────────────
 
+    # Atomically RPUSH + reset TTL. Without this, a crash between the two calls
+    # leaves the buffer key with no TTL, leaking it permanently in Redis.
+    _PUSH_EVENT_LUA = """
+redis.call('RPUSH', KEYS[1], ARGV[1])
+redis.call('EXPIRE', KEYS[1], ARGV[2])
+return redis.call('LLEN', KEYS[1])
+"""
+
     async def push_stream_event(self, query_id: str, event: dict, ttl: int) -> None:
         key = f"stream:{query_id}"
-        await self._r.rpush(key, json.dumps(event))
-        await self._r.expire(key, ttl)
+        await self._r.eval(self._PUSH_EVENT_LUA, 1, key, json.dumps(event), ttl)
 
     async def get_stream_events(self, query_id: str, after_seq: int = 0) -> list[dict]:
         key = f"stream:{query_id}"

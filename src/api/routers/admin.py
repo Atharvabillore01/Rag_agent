@@ -1,8 +1,10 @@
 """Admin endpoints — user management, tenant config, audit log (§6, §11)."""
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth import require_admin
@@ -152,6 +154,95 @@ async def get_audit_log(
         )
         for log in logs
     ]
+
+
+@router.get("/observability")
+async def get_observability(
+    action: str | None = None,
+    user_id: str | None = None,
+    skip: int = 0,
+    limit: int = 200,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Enriched activity feed with per-user email resolution and 24h stats."""
+    tenant_id = current_user.tenant_id
+    now = datetime.now(timezone.utc)
+    day_ago = now - timedelta(hours=24)
+
+    # Resolve user_id → email for this tenant
+    user_rows = await db.execute(
+        select(User.id, User.email, User.role, User.last_login_at)
+        .where(User.tenant_id == tenant_id)
+    )
+    user_map = {r[0]: {"email": r[1], "role": r[2].value, "last_login_at": r[3].isoformat() if r[3] else None}
+                for r in user_rows.fetchall()}
+
+    # 24h stats
+    queries_today = (await db.execute(
+        select(func.count()).where(
+            AuditLog.tenant_id == tenant_id,
+            AuditLog.action == "document_query",
+            AuditLog.timestamp >= day_ago,
+        )
+    )).scalar() or 0
+
+    logins_today = (await db.execute(
+        select(func.count()).where(
+            AuditLog.tenant_id == tenant_id,
+            AuditLog.action == "user_login",
+            AuditLog.timestamp >= day_ago,
+        )
+    )).scalar() or 0
+
+    active_users_today = (await db.execute(
+        select(func.count(AuditLog.user_id.distinct())).where(
+            AuditLog.tenant_id == tenant_id,
+            AuditLog.timestamp >= day_ago,
+            AuditLog.user_id.isnot(None),
+        )
+    )).scalar() or 0
+
+    total_queries = (await db.execute(
+        select(func.count()).where(
+            AuditLog.tenant_id == tenant_id,
+            AuditLog.action == "document_query",
+        )
+    )).scalar() or 0
+
+    # Filtered log
+    q = (
+        select(AuditLog)
+        .where(AuditLog.tenant_id == tenant_id)
+        .order_by(AuditLog.timestamp.desc())
+    )
+    if action:
+        q = q.where(AuditLog.action == action)
+    if user_id:
+        q = q.where(AuditLog.user_id == user_id)
+    logs = (await db.execute(q.offset(skip).limit(limit))).scalars().all()
+
+    return {
+        "stats": {
+            "queries_today": queries_today,
+            "logins_today": logins_today,
+            "active_users_today": active_users_today,
+            "total_queries": total_queries,
+        },
+        "users": [{"id": uid, **info} for uid, info in user_map.items()],
+        "logs": [
+            {
+                "id": log.id,
+                "action": log.action,
+                "user_id": log.user_id,
+                "user_email": user_map.get(log.user_id, {}).get("email", "system") if log.user_id else "system",
+                "user_role": user_map.get(log.user_id, {}).get("role") if log.user_id else None,
+                "timestamp": log.timestamp.isoformat(),
+                "metadata": log.log_metadata,
+            }
+            for log in logs
+        ],
+    }
 
 
 @router.get("/tenant")

@@ -1,5 +1,6 @@
 """Embed chunks and upsert into Qdrant — idempotent (§3.5)."""
 
+import logging
 import uuid
 
 from src.ingestion.chunker import RawChunk
@@ -24,6 +25,8 @@ def _chunk_point_id(document_id: str, chunk_index: int) -> str:
 # degrades keyword recall on long chunks (512 tokens ≈ 2000 chars).
 _TEXT_PREVIEW_MAX = 2000
 
+
+logger = logging.getLogger(__name__)
 
 async def embed_and_index(
     tenant_id: str,
@@ -58,6 +61,17 @@ async def embed_and_index(
     for batch_start in range(0, len(indexable), EMBED_BATCH_SIZE):
         batch = indexable[batch_start : batch_start + EMBED_BATCH_SIZE]
         texts = [c.text for c in batch]
+        batch_end = min(batch_start + len(batch), len(indexable))
+        logger.info(
+            "embedding batch",
+            extra={
+                "document_id": document_id,
+                "tenant_id": tenant_id,
+                "batch_start": batch_start,
+                "batch_end": batch_end,
+                "total_chunks": len(indexable),
+            },
+        )
 
         embed_resp = await embedder.embed(texts)
 
@@ -92,3 +106,13 @@ async def embed_and_index(
             )
 
         await vector_store.upsert(tenant_id, points)
+        logger.info(
+            "vector upsert completed",
+            extra={
+                "document_id": document_id,
+                "tenant_id": tenant_id,
+                "batch_start": batch_start,
+                "batch_end": batch_end,
+                "points": len(points),
+            },
+        )

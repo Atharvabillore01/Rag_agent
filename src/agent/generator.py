@@ -29,12 +29,14 @@ def _xml_attr(value: str | None) -> str:
     return (value or "").replace("&", "&amp;").replace("'", "&apos;").replace("<", "&lt;")
 
 
-def _format_chunks(chunks: list[RetrievedChunk]) -> str:
+def _format_chunks(chunks: list[RetrievedChunk], doc_names: dict[str, str] | None = None) -> str:
     """Wrap each chunk in XML tags to make injection attempts structurally visible."""
     parts = []
     for chunk in chunks:
+        name = (doc_names or {}).get(chunk.document_id, "")
+        name_attr = f" doc_name='{_xml_attr(name)}'" if name else ""
         parts.append(
-            f"<chunk id='{_xml_attr(chunk.chunk_id)}' doc='{_xml_attr(chunk.document_id)}' "
+            f"<chunk id='{_xml_attr(chunk.chunk_id)}' doc='{_xml_attr(chunk.document_id)}'{name_attr} "
             f"page='{chunk.page_number}' section='{_xml_attr(chunk.section_heading)}'>\n"
             f"{chunk.text_preview}\n"
             f"</chunk>"
@@ -47,6 +49,7 @@ async def generate_answer(
     chunks: list[RetrievedChunk],
     planner_summary: str = "",
     provider: LLMProvider | None = None,
+    doc_names: dict[str, str] | None = None,
 ) -> GeneratorResult:
     """Non-streaming generation — returns full answer with citations."""
     provider = provider or llm()
@@ -57,7 +60,7 @@ async def generate_answer(
             role="user",
             content=GENERATOR_USER.format(
                 question=question,
-                chunks=_format_chunks(chunks),
+                chunks=_format_chunks(chunks, doc_names),
                 planner_summary=planner_summary or "Single-hop query.",
             ),
         ),
@@ -74,6 +77,7 @@ async def stream_answer(
     chunks: list[RetrievedChunk],
     planner_summary: str = "",
     provider: LLMProvider | None = None,
+    doc_names: dict[str, str] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Token-by-token streaming generation (§4.3)."""
     provider = provider or llm()
@@ -84,7 +88,7 @@ async def stream_answer(
             role="user",
             content=GENERATOR_USER.format(
                 question=question,
-                chunks=_format_chunks(chunks),
+                chunks=_format_chunks(chunks, doc_names),
                 planner_summary=planner_summary or "Single-hop query.",
             ),
         ),

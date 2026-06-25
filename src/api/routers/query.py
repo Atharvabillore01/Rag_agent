@@ -6,14 +6,12 @@ import uuid
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agent.loop import AgentContext, run_agent_loop
 from src.api.auth import require_viewer
 from src.api.deps import get_cache_dep, get_vector_store_dep
 from src.config import get_settings
 from src.db.models import User
-from src.db.session import get_db
 from src.storage.cache import CacheClient
 from src.storage.vector import VectorStore
 
@@ -36,7 +34,6 @@ def _sse_event(event_type: str, data: dict, seq: int) -> str:
 async def stream_query(
     body: QueryRequest,
     current_user: User = Depends(require_viewer),
-    db: AsyncSession = Depends(get_db),
     vector_store: VectorStore = Depends(get_vector_store_dep),
     cache: CacheClient = Depends(get_cache_dep),
 ):
@@ -75,7 +72,6 @@ async def stream_query(
                 query=body.question,
                 context=context,
                 vector_store=vector_store,
-                db=db,
             ):
                 sse = _sse_event(agent_event.event_type, agent_event.payload, agent_event.seq)
 

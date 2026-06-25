@@ -87,6 +87,7 @@ class AuditAction(str, enum.Enum):
     document_upload = "document_upload"
     document_delete = "document_delete"
     document_query = "document_query"
+    user_login = "user_login"
     user_create = "user_create"
     user_delete = "user_delete"
     role_change = "role_change"
@@ -285,7 +286,15 @@ class Chunk(Base):
 
     document: Mapped[Document] = relationship("Document", back_populates="chunks")
     children: Mapped[list["Chunk"]] = relationship(
-        "Chunk", foreign_keys=[parent_chunk_id], backref="parent"
+        "Chunk",
+        foreign_keys=[parent_chunk_id],
+        back_populates="parent",
+    )
+    parent: Mapped["Chunk | None"] = relationship(
+        "Chunk",
+        foreign_keys=[parent_chunk_id],
+        back_populates="children",
+        remote_side="Chunk.id",
     )
 
 

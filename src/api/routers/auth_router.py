@@ -1,12 +1,14 @@
 """Auth endpoints — login, register, token refresh."""
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth import create_access_token, hash_password, verify_password
-from src.db.models import Tenant, TenantTier, User, UserRole
+from src.db.models import AuditLog, Tenant, TenantTier, User, UserRole
 from src.db.session import get_db
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -47,7 +49,7 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     db.add(user)
     await db.flush()
 
-    token = create_access_token({"sub": user.id, "tenant_id": tenant.id, "role": user.role.value})
+    token = create_access_token({"sub": str(user.id), "tenant_id": str(tenant.id), "role": user.role.value, "email": user.email})
     return TokenResponse(access_token=token)
 
 
@@ -64,5 +66,15 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
             detail="Invalid credentials",
         )
 
-    token = create_access_token({"sub": user.id, "tenant_id": user.tenant_id, "role": user.role.value})
+    user.last_login_at = datetime.now(timezone.utc)
+    db.add(AuditLog(
+        tenant_id=user.tenant_id,
+        user_id=user.id,
+        action="user_login",
+        resource_type="session",
+        log_metadata={"email": user.email},
+    ))
+    await db.commit()
+
+    token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "role": user.role.value, "email": user.email})
     return TokenResponse(access_token=token)

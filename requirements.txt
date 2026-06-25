@@ -4,15 +4,17 @@ uvicorn[standard]>=0.30.0
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
 python-jose[cryptography]>=3.3.0   # JWT
-passlib[bcrypt]>=1.7.4             # password hashing
+bcrypt>=4.0.0                      # password hashing (used directly — passlib 1.7.x is incompatible with bcrypt 4+)
+email-validator>=1.3.0             # required for Pydantic EmailStr
 
 # ── LLM providers ─────────────────────────────────────────────────────────────
 openai>=1.40.0          # used by: Groq, OpenAI, Azure OpenAI, Ollama (all OpenAI-compatible)
 anthropic>=0.34.0       # used by: Claude
 
 # ── Local ML (embeddings + reranker) ─────────────────────────────────────────
+--extra-index-url https://download.pytorch.org/whl/cpu
 sentence-transformers>=3.1.0
-torch>=2.3.0            # CPU-only is fine for embed/rerank
+torch==2.12.1+cpu      # CPU-only wheel for Docker and local development
 
 # ── Vector DB ────────────────────────────────────────────────────────────────
 qdrant-client>=1.11.0
@@ -50,3 +52,6 @@ opentelemetry-exporter-otlp>=1.25.0
 python-multipart>=0.0.9  # file upload support in FastAPI
 tenacity>=8.5.0          # retry + circuit breaker
 python-dotenv>=1.0.0
+
+# ── Production server ─────────────────────────────────────────────────────────
+gunicorn>=21.2.0

@@ -12,7 +12,8 @@ from src.agent.planner import PlanResult, SubQuestion, plan_query
 from src.agent.retriever import RetrievedChunk, hybrid_retrieve
 from src.agent.verifier import VerifierResult, verify_retrieval
 from src.config import get_settings
-from src.db.models import Document, DocumentStatus, Tenant
+from src.db.models import AuditAction, AuditLog, Document, DocumentStatus, Tenant
+from src.db.session import AsyncSessionLocal
 from src.providers.base import LLMProvider
 from src.providers.factory import get_tenant_llm
 from src.storage.vector import VectorStore
@@ -43,35 +44,43 @@ async def _fetch_tenant_llm(db: AsyncSession, tenant_id: str) -> LLMProvider:
     return get_tenant_llm(provider_override, model_override)
 
 
-async def _fetch_doc_metadata(db: AsyncSession, tenant_id: str) -> str:
-    """Return a compact summary of ready documents for the planner."""
+async def _fetch_doc_metadata(db: AsyncSession, tenant_id: str) -> tuple[str, dict[str, str]]:
+    """Return (planner text, filename→uuid map) for ready documents."""
+    settings = get_settings()
     result = await db.execute(
         select(Document.id, Document.filename, Document.file_type, Document.page_count)
         .where(
             Document.tenant_id == tenant_id,
             Document.status.in_([DocumentStatus.ready, DocumentStatus.ready_with_warnings]),
         )
-        .limit(50)
+        .limit(settings.agent_doc_metadata_limit)
     )
     rows = result.fetchall()
     if not rows:
-        return "No documents are available."
+        return "No documents are available.", {}
     lines = [
-        f"- id={r[0]} name={r[1]!r} type={r[2]} pages={r[3]}"
-        for r in rows
+        f"{i+1}. {r[1]}  [{r[2].upper()}{f' · {r[3]} pages' if r[3] else ''}]"
+        for i, r in enumerate(rows)
     ]
-    return "\n".join(lines)
+    # Index both bare filename and the "N. filename" form shown to the planner,
+    # so planner output like "2. DPR- Telangana.pdf" resolves correctly.
+    name_to_id = {}
+    for i, r in enumerate(rows):
+        name_to_id[r[1]] = r[0]
+        name_to_id[f"{i + 1}. {r[1]}"] = r[0]
+    return "\n".join(lines), name_to_id
 
 
 async def run_agent_loop(
     query: str,
     context: AgentContext,
     vector_store: VectorStore,
-    db: AsyncSession,
 ) -> AsyncGenerator[AgentEvent, None]:
     """Full agentic loop as an async generator of AgentEvents.
 
-    Callers iterate over events and forward them to the SSE/WebSocket stream.
+    The DB session is scoped to the retrieval phase only and released before
+    streaming starts — this prevents a connection from being held open for the
+    entire duration of a token stream under concurrent load.
     """
     settings = get_settings()
     seq = 0
@@ -82,7 +91,7 @@ async def run_agent_loop(
         seq += 1
         return e
 
-    # ── 1. Intent classification ───────────────────────────────────────────────
+    # ── 1. Intent classification (no DB) ──────────────────────────────────────
     yield event("status", message="Classifying intent...")
     intent_result: IntentResult = await classify_intent(query)
 
@@ -101,78 +110,127 @@ async def run_agent_loop(
         yield event("done")
         return
 
-    # ── 2. Plan ────────────────────────────────────────────────────────────────
+    if intent_result.intent == "system_meta":
+        # Answer meta questions about available documents directly from Postgres —
+        # no retrieval needed.
+        async with AsyncSessionLocal() as db:
+            doc_metadata, _ = await _fetch_doc_metadata(db, context.tenant_id)
+        if doc_metadata == "No documents are available.":
+            answer = "You have no documents uploaded yet. Use the Documents page to upload files."
+        else:
+            answer = f"Here are the documents available in your workspace:\n\n{doc_metadata}"
+        yield event("final_answer", answer=answer, citations=[])
+        yield event("done")
+        return
+
+    # ── 2-3. Plan + Retrieve (DB session — released before generation) ────────
     max_rounds = (
         settings.demo_max_retrieval_rounds if context.is_demo
         else settings.agent_max_retrieval_rounds
     )
 
-    # Resolve tenant LLM provider once (per-tenant override or global default)
-    tenant_provider = await _fetch_tenant_llm(db, context.tenant_id)
-
-    yield event("status", message="Planning retrieval strategy...")
-    doc_metadata = await _fetch_doc_metadata(db, context.tenant_id)
-    plan: PlanResult = await plan_query(
-        query=query,
-        doc_metadata=doc_metadata,
-        max_rounds=max_rounds,
-        provider=tenant_provider,
-    )
-
-    if not plan.needs_agentic_loop:
-        plan.subquestions = plan.subquestions[:1]
-        plan.max_rounds = 1
-
-    # ── 3. Retrieval → verify loop ─────────────────────────────────────────────
-    # Each planned sub-question drives one retrieval round.  The verifier may
-    # suggest a rewrite for the NEXT round instead of using the next sub-question.
     all_chunks: list[RetrievedChunk] = []
-    seen_chunk_ids: set[str] = set()           # dedup across rounds
-    verifier: VerifierResult | None = None
+    tenant_provider: LLMProvider | None = None
+    planner_summary = ""
+    id_to_name: dict[str, str] = {}  # UUID → filename, passed to generator
 
-    subquestions = plan.subquestions or [SubQuestion(id="sq0", question=query)]
-    total_rounds = min(len(subquestions), plan.max_rounds)
+    async with AsyncSessionLocal() as db:
+        tenant_provider = await _fetch_tenant_llm(db, context.tenant_id)
 
-    for round_num, subq in enumerate(subquestions[:total_rounds], 1):
-        # If verifier suggested a rewrite use it; otherwise use the sub-question
-        if verifier and verifier.suggested_query_rewrites:
-            retrieval_query = verifier.suggested_query_rewrites[0]
-        else:
-            retrieval_query = subq.question
-
-        yield event("status", message=f"Searching documents (round {round_num}/{total_rounds}): {retrieval_query[:60]}...")
-
-        round_chunks = await hybrid_retrieve(
-            query=retrieval_query,
+        # Write audit log — cache hits never reach this code, so this is one
+        # record per real agentic query, not per cache hit.
+        db.add(AuditLog(
             tenant_id=context.tenant_id,
-            vector_store=vector_store,
-            db=db,
-            top_k=settings.agent_retrieval_top_k,
-            rerank_top_n=settings.agent_rerank_top_n,
-            collection_tags=context.collection_tags,
-            retrieval_strategy=subq.retrieval_strategy,
-        )
+            user_id=context.user_id,
+            action=AuditAction.document_query.value,
+            log_metadata={"question": query[:500]},
+        ))
+        await db.commit()
 
-        # Deduplicate — the same chunk can rank in multiple rounds
-        for chunk in round_chunks:
-            if chunk.chunk_id not in seen_chunk_ids:
-                seen_chunk_ids.add(chunk.chunk_id)
-                all_chunks.append(chunk)
-
-        yield event("status", message=f"Verifying relevance of {len(all_chunks)} unique chunks...")
-        verifier = await verify_retrieval(
+        yield event("status", message="Planning retrieval strategy...")
+        doc_metadata, name_to_id = await _fetch_doc_metadata(db, context.tenant_id)
+        # Invert for the generator (bare filename entries don't start with a digit)
+        id_to_name = {v: k for k, v in name_to_id.items() if not k[:1].isdigit()}
+        plan: PlanResult = await plan_query(
             query=query,
-            chunks=all_chunks,
-            current_round=round_num,
-            max_rounds=total_rounds,
+            doc_metadata=doc_metadata,
+            max_rounds=max_rounds,
             provider=tenant_provider,
         )
 
-        if verifier.sufficient or not verifier.should_retry:
-            break
+        # Resolve filenames → UUIDs in target_documents.
+        # The planner LLM only sees filenames, so it returns filenames.
+        # The retriever's _authorize_document_ids does a UUID lookup — filenames
+        # never match, causing silent empty results.
+        for subq in plan.subquestions:
+            if subq.target_documents:
+                subq.target_documents = [
+                    name_to_id.get(td, td) for td in subq.target_documents
+                ]
 
-        if verifier.suggested_query_rewrites:
-            yield event("status", message=f"Reformulating: {verifier.suggested_query_rewrites[0][:80]}...")
+        if not plan.needs_agentic_loop:
+            plan.subquestions = plan.subquestions[:1]
+            plan.max_rounds = 1
+        else:
+            sq_lines = "\n".join(
+                f"  {i+1}. {sq.question}"
+                for i, sq in enumerate(plan.subquestions)
+            )
+            yield event("thinking", message=f"Breaking into {len(plan.subquestions)} sub-question(s):\n{sq_lines}")
+
+        seen_chunk_ids: set[str] = set()
+        verifier: VerifierResult | None = None
+
+        subquestions = plan.subquestions or [SubQuestion(id="sq0", question=query)]
+        total_rounds = min(len(subquestions), plan.max_rounds)
+
+        for round_num, subq in enumerate(subquestions[:total_rounds], 1):
+            if verifier and verifier.suggested_query_rewrites:
+                retrieval_query = verifier.suggested_query_rewrites[0]
+            else:
+                retrieval_query = subq.question
+
+            yield event("status", message=f"Searching documents (round {round_num}/{total_rounds}): {retrieval_query[:60]}...")
+
+            round_chunks = await hybrid_retrieve(
+                query=retrieval_query,
+                tenant_id=context.tenant_id,
+                vector_store=vector_store,
+                db=db,
+                top_k=settings.agent_retrieval_top_k,
+                rerank_top_n=settings.agent_rerank_top_n,
+                collection_tags=context.collection_tags,
+                retrieval_strategy=subq.retrieval_strategy,
+                document_ids=subq.target_documents or None,
+            )
+
+            for chunk in round_chunks:
+                if chunk.chunk_id not in seen_chunk_ids:
+                    seen_chunk_ids.add(chunk.chunk_id)
+                    all_chunks.append(chunk)
+
+            yield event("status", message=f"Verifying relevance of {len(all_chunks)} unique chunks...")
+            verifier = await verify_retrieval(
+                query=query,
+                chunks=all_chunks,
+                current_round=round_num,
+                max_rounds=total_rounds,
+                provider=tenant_provider,
+            )
+
+            if verifier.sufficient or not verifier.should_retry:
+                break
+
+            if verifier.missing_evidence:
+                yield event("thinking", message=f"Still missing: {'; '.join(verifier.missing_evidence[:3])}")
+
+            if verifier.suggested_query_rewrites:
+                yield event("status", message=f"Reformulating: {verifier.suggested_query_rewrites[0][:80]}...")
+
+        planner_summary = f"Planned {len(plan.subquestions)} sub-question(s). Agentic loop: {plan.needs_agentic_loop}."
+
+    # ── DB session released here ───────────────────────────────────────────────
+    # Everything below (token streaming) runs without holding a DB connection.
 
     # ── 4. Streaming generation ────────────────────────────────────────────────
     if not all_chunks:
@@ -184,12 +242,10 @@ async def run_agent_loop(
         yield event("done")
         return
 
-    planner_summary = f"Planned {len(plan.subquestions)} sub-question(s). Agentic loop: {plan.needs_agentic_loop}."
-
     yield event("status", message="Generating answer...")
 
     full_parts: list[str] = []
-    async for token in stream_answer(query, all_chunks, planner_summary, provider=tenant_provider):
+    async for token in stream_answer(query, all_chunks, planner_summary, provider=tenant_provider, doc_names=id_to_name):
         full_parts.append(token)
         yield event("token_delta", token=token)
 

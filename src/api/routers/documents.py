@@ -1,5 +1,6 @@
 """Document upload and management endpoints (§3, §15.1)."""
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -18,6 +19,7 @@ from src.storage.vector import VectorStore
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".webp"}
 
@@ -127,6 +129,17 @@ async def upload_document(
     )
     db.add(doc)
     await db.commit()
+    logger.info(
+        "upload queued document",
+        extra={
+            "document_id": document_id,
+            "tenant_id": current_user.tenant_id,
+            "uploaded_by": current_user.id,
+            "doc_filename": filename,
+            "file_size_bytes": len(data),
+            "file_type": file_type,
+        },
+    )
 
     # Enqueue ingestion job
     from src.ingestion.worker import run_ingestion_pipeline
@@ -207,6 +220,33 @@ async def get_document(
         page_count=doc.page_count,
         created_at=doc.created_at.isoformat(),
     )
+
+
+@router.get("/{document_id}/view-url")
+async def get_document_view_url(
+    document_id: str,
+    current_user: User = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+    object_store: ObjectStore = Depends(get_object_store_dep),
+):
+    """Return a short-lived presigned URL to view/download the original file."""
+    import asyncio
+    result = await db.execute(
+        select(Document).where(
+            Document.id == document_id,
+            Document.tenant_id == current_user.tenant_id,
+        )
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    loop = asyncio.get_running_loop()
+    url = await loop.run_in_executor(
+        None,
+        lambda: object_store.presigned_download_url(doc.storage_path, expires_in=900),
+    )
+    return {"url": url, "filename": doc.filename, "file_type": doc.file_type}
 
 
 @router.delete("/{document_id}", status_code=204)

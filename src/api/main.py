@@ -8,6 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.middleware import RateLimitMiddleware, RequestIDMiddleware, TimingMiddleware
 from src.api.routers import admin, auth_router, documents, query
 from src.config import get_settings
+from src.logging_config import configure_logging
+
+# Configure file + console logging before anything else runs
+configure_logging("api")
 
 settings = get_settings()
 
@@ -42,7 +46,7 @@ app = FastAPI(
 # ── Middleware (order matters — outermost wraps all) ──────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten in prod — set to frontend domain(s)
+    allow_origins=settings.cors_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

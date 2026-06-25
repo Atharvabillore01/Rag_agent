@@ -1,13 +1,19 @@
 """Celery ingestion worker — durable state machine with per-stage checkpoints (§3.5)."""
 
+import logging
+import time
 from datetime import datetime, timezone
 
 from celery import Celery
 from celery.utils.log import get_task_logger
 
 from src.config import get_settings
+from src.logging_config import configure_logging
 
 settings = get_settings()
+
+# Write ingestion logs to logs/ingestion.log
+configure_logging("ingestion")
 
 celery_app = Celery(
     "rag_ingestion",
@@ -23,6 +29,7 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,         # re-queue on worker crash
     worker_prefetch_multiplier=1,
+    worker_autoscale=f"{settings.celery_max_concurrency},{settings.celery_min_concurrency}",
     task_routes={
         "src.ingestion.worker.run_ingestion_pipeline": {
             "queue": settings.ingestion_fast_queue
@@ -128,23 +135,36 @@ async def _async_pipeline(
             db.add(job)
             await db.commit()
 
+        pipeline_start = time.perf_counter()
+
+        def _elapsed(since: float) -> str:
+            return f"{(time.perf_counter() - since) * 1000:.1f}ms"
+
         try:
             # ── Stage 1: Download from object storage ──────────────────────
             await _set_status(DocumentStatus.parsing)
-            logger.info(f"[{document_id}] downloading from {storage_path}")
+            t = time.perf_counter()
+            logger.info(f"[{document_id}] stage=download  path={storage_path}")
             raw_bytes = object_store.download(storage_path)
+            logger.info(f"[{document_id}] stage=download  done  size={len(raw_bytes)}B  runtime={_elapsed(t)}")
 
             # ── Stage 2: Parse ─────────────────────────────────────────────
-            logger.info(f"[{document_id}] parsing as {file_type}")
+            t = time.perf_counter()
+            logger.info(f"[{document_id}] stage=parse  file_type={file_type}")
             parsed = parse_document(raw_bytes, file_type)
             has_warnings = bool(parsed.warnings)
-
+            logger.info(
+                f"[{document_id}] stage=parse  done  pages={getattr(parsed, 'page_count', '?')}"
+                f"  warnings={len(parsed.warnings)}  runtime={_elapsed(t)}"
+            )
             await _checkpoint(IngestionStage.parsing)
 
             # ── Stage 3: Chunk ─────────────────────────────────────────────
             await _set_status(DocumentStatus.chunking)
+            t = time.perf_counter()
+            logger.info(f"[{document_id}] stage=chunk")
             chunks = chunk_document(parsed, file_type)
-            logger.info(f"[{document_id}] produced {len(chunks)} chunks")
+            logger.info(f"[{document_id}] stage=chunk  done  chunks={len(chunks)}  runtime={_elapsed(t)}")
             await _checkpoint(IngestionStage.chunking)
 
             # ── Stage 4: Persist chunk metadata to Postgres ─────────────────
@@ -160,8 +180,11 @@ async def _async_pipeline(
             # Build a map from raw chunk index → DB chunk id (for parent linking)
             chunk_index_to_id: dict[int, str] = {}
 
+            t = time.perf_counter()
+            logger.info(f"[{document_id}] stage=db_persist  chunks={len(chunks)}")
             for raw_chunk in chunks:
-                # Resolve parent_chunk_id
+                # Resolve parent_chunk_id — parents always have lower chunk_index
+                # so they're already in the map by the time children are processed.
                 parent_db_id: str | None = None
                 if raw_chunk.parent_index is not None:
                     parent_db_id = chunk_index_to_id.get(raw_chunk.parent_index)
@@ -180,10 +203,12 @@ async def _async_pipeline(
                     embedding_version="1",
                 )
                 db.add(db_chunk)
-                await db.flush()  # get db_chunk.id without committing
+                # Chunk.id uses default=_uuid() — assigned by Python at construction,
+                # not by the DB server. No flush needed to read the id.
                 chunk_index_to_id[raw_chunk.chunk_index] = db_chunk.id
 
-            await db.commit()
+            await db.commit()  # single round-trip for all N chunks
+            logger.info(f"[{document_id}] stage=db_persist  done  runtime={_elapsed(t)}")
 
             # ── Stage 5: Embed + index ─────────────────────────────────────
             await _set_status(DocumentStatus.embedding)
@@ -200,6 +225,8 @@ async def _async_pipeline(
             )
             await _set_status(final_status)
 
+            t = time.perf_counter()
+            logger.info(f"[{document_id}] stage=embed_index  model={embed_model}  chunks={len(chunks)}")
             await embed_and_index(
                 tenant_id=tenant_id,
                 document_id=document_id,
@@ -209,9 +236,15 @@ async def _async_pipeline(
                 collection_tags=collection_tags,
                 document_status="ready",
             )
+            logger.info(f"[{document_id}] stage=embed_index  done  runtime={_elapsed(t)}")
 
             await _checkpoint(IngestionStage.indexing)
-            logger.info(f"[{document_id}] ingestion complete → {final_status.value}")
+
+            total_ms = (time.perf_counter() - pipeline_start) * 1000
+            logger.info(
+                f"[{document_id}] INGESTION_COMPLETE  status={final_status.value}"
+                f"  total_runtime={total_ms:.1f}ms"
+            )
 
             # Publish status event for Notification Service
             from src.storage.cache import get_cache
@@ -219,7 +252,10 @@ async def _async_pipeline(
             await cache.set_document_status(tenant_id, document_id, final_status.value)
 
         except Exception as exc:
-            logger.exception(f"[{document_id}] ingestion failed: {exc}")
+            total_ms = (time.perf_counter() - pipeline_start) * 1000
+            logger.exception(
+                f"[{document_id}] INGESTION_FAILED  error={exc}  total_runtime={total_ms:.1f}ms"
+            )
             retries_left = task.max_retries - task.request.retries
 
             if retries_left > 0:
