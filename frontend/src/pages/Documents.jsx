@@ -5,7 +5,7 @@ import {
   Trash2, RefreshCw, CheckCircle2, AlertCircle,
   Clock, Loader2, Plus, X, Upload,
 } from 'lucide-react'
-import { documents as docsApi } from '../api'
+import { documents as docsApi, folders as foldersApi } from '../api'
 import { useAuthStore } from '../stores/authStore'
 import UploadZone from '../components/UploadZone'
 
@@ -83,7 +83,7 @@ function LivePipeline({ status }) {
   )
 }
 
-function DocCard({ doc, onDelete, onComplete }) {
+function DocCard({ doc, onDelete, onComplete, folders = [], onMove, canEdit = false }) {
   const [deleting, setDeleting] = useState(false)
   const [liveStatus, setLiveStatus] = useState(doc.status)
   const status = liveStatus
@@ -164,6 +164,21 @@ function DocCard({ doc, onDelete, onComplete }) {
 
       {/* Live ingestion pipeline */}
       {processing && <LivePipeline status={status} />}
+
+      {/* Move to folder */}
+      {canEdit && (
+        <select
+          value={doc.folder_id || ''}
+          onChange={(e) => onMove?.(doc.document_id, e.target.value || null)}
+          className="text-[11px] text-slate-500 border border-slate-200 rounded-lg px-2 py-1 focus:border-duck-blue outline-none"
+          title="Move to folder"
+        >
+          <option value="">No folder</option>
+          {folders.map((f) => (
+            <option key={f.id} value={f.id}>{f.name}</option>
+          ))}
+        </select>
+      )}
     </motion.div>
   )
 }
@@ -172,17 +187,36 @@ export default function Documents() {
   const [docs, setDocs]         = useState([])
   const [loading, setLoading]   = useState(true)
   const [showUpload, setShowUpload] = useState(false)
+  const [folderList, setFolderList]     = useState([])
+  const [activeFolder, setActiveFolder] = useState(null)   // null=all | 'unfiled' | folderId
   const user = useAuthStore((s) => s.user)
   const canUpload = ['org_admin', 'editor'].includes(user?.role)
 
   const fetchDocs = useCallback(async () => {
     setLoading(true)
-    try { setDocs(await docsApi.list()) }
+    try { setDocs(await docsApi.list(0, 50, activeFolder)) }
     catch {}
     finally { setLoading(false) }
+  }, [activeFolder])
+
+  const loadFolders = useCallback(async () => {
+    try { setFolderList(await foldersApi.list()) } catch {}
   }, [])
 
   useEffect(() => { fetchDocs() }, [fetchDocs])
+  useEffect(() => { loadFolders() }, [loadFolders])
+
+  async function moveDoc(id, folderId) {
+    try { await docsApi.move(id, folderId); fetchDocs(); loadFolders() }
+    catch (e) { alert(e.message) }
+  }
+
+  async function createFolder() {
+    const name = prompt('New folder name')
+    if (!name?.trim()) return
+    try { await foldersApi.create(name.trim()); loadFolders() }
+    catch (e) { alert(e.message) }
+  }
 
   // Poll for processing docs
   useEffect(() => {
@@ -226,6 +260,27 @@ export default function Documents() {
       </div>
 
       <div className="flex-1 overflow-y-auto scrollbar-thin px-6 py-6">
+        {/* Folder filter bar */}
+        <div className="flex items-center gap-2 flex-wrap mb-4">
+          {[{ id: null, label: 'All' }, { id: 'unfiled', label: 'Unfiled' },
+            ...folderList.map((f) => ({ id: f.id, label: `${f.name} (${f.document_count})` }))].map((f) => (
+            <button key={f.id ?? 'all'} onClick={() => setActiveFolder(f.id)}
+              className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
+                activeFolder === f.id
+                  ? 'bg-duck-blue text-white border-duck-blue'
+                  : 'bg-white text-slate-600 border-slate-200 hover:border-duck-blue'
+              }`}>
+              {f.label}
+            </button>
+          ))}
+          {canUpload && (
+            <button onClick={createFolder}
+              className="text-xs px-3 py-1.5 rounded-full border border-dashed border-slate-300 text-slate-500 hover:border-duck-blue hover:text-duck-blue">
+              + New folder
+            </button>
+          )}
+        </div>
+
         {/* Stats bar */}
         <div className="grid grid-cols-3 gap-4 mb-6">
           {[
@@ -290,7 +345,8 @@ export default function Documents() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             <AnimatePresence>
               {docs.map((doc) => (
-                <DocCard key={doc.document_id} doc={doc} onDelete={removeDoc} onComplete={fetchDocs} />
+                <DocCard key={doc.document_id} doc={doc} onDelete={removeDoc} onComplete={fetchDocs}
+                  folders={folderList} onMove={moveDoc} canEdit={canUpload} />
               ))}
             </AnimatePresence>
           </div>

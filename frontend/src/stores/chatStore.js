@@ -92,7 +92,7 @@ export const useChatStore = create(
           ...sess,
           messages: [
             ...sess.messages,
-            { id, role: 'assistant', text: '', citations: [], status: 'streaming' },
+            { id, role: 'assistant', text: '', citations: [], followups: [], status: 'streaming' },
           ],
         }))
       },
@@ -113,7 +113,7 @@ export const useChatStore = create(
         }))
       },
 
-      finalizeMessage(id, answer, citations) {
+      finalizeMessage(id, answer, citations, followups = []) {
         const now = Date.now()
         set(s => ({
           streaming: false,
@@ -126,7 +126,7 @@ export const useChatStore = create(
         get()._patchSession(sess => ({
           ...sess,
           messages: sess.messages.map(m =>
-            m.id === id ? { ...m, text: answer, citations, status: 'done' } : m
+            m.id === id ? { ...m, text: answer, citations, followups, status: 'done' } : m
           ),
         }))
       },

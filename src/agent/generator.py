@@ -1,5 +1,6 @@
 """Streaming answer generator — cited, RBAC-clean, injection-resistant (§4.6, §18)."""
 
+import json
 import re
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -8,6 +9,44 @@ from src.agent.prompts import GENERATOR_SYSTEM, GENERATOR_USER
 from src.agent.retriever import RetrievedChunk
 from src.providers.base import LLMProvider, Message
 from src.providers.factory import llm
+
+_FOLLOWUP_SYSTEM = (
+    "Given a user's question and the answer that was given, propose 2-4 concise, DISTINCT "
+    "follow-up questions the user might naturally ask next about the same documents. Each under "
+    '110 characters, no numbering. Return a JSON object {"followups": ["...", "..."]} and nothing '
+    "else. If no sensible follow-ups exist, return an empty list."
+)
+
+
+async def suggest_followups(question: str, answer: str, provider: LLMProvider | None = None, *, max_items: int = 4) -> list[str]:
+    """Best-effort follow-up question suggestions. Never raises — returns [] on any issue."""
+    if not (question or "").strip() or not (answer or "").strip():
+        return []
+    provider = provider or llm()
+    messages = [
+        Message(role="system", content=_FOLLOWUP_SYSTEM),
+        Message(role="user", content=f"Question: {question}\n\nAnswer: {answer[:2000]}\n\nReturn the JSON."),
+    ]
+    try:
+        resp = await provider.complete(messages, max_tokens=400, temperature=0.3, json_mode=True)
+        raw = (resp.content or "").strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[a-zA-Z]*\n?", "", raw)
+            raw = re.sub(r"\n?```$", "", raw).strip()
+        obj = json.loads(raw)
+    except Exception:  # noqa: BLE001 — follow-ups are optional; never break the answer
+        return []
+    items = obj.get("followups") if isinstance(obj, dict) else None
+    if not isinstance(items, list):
+        return []
+    out: list[str] = []
+    for it in items:
+        s = str(it).strip()
+        if s and len(s) <= 200:
+            out.append(s[:200])
+        if len(out) >= max_items:
+            break
+    return out
 
 # How many chunks to cite when the model emits no SOURCES line (precise fallback,
 # not "cite everything").

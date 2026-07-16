@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.middleware import RateLimitMiddleware, RequestIDMiddleware, TimingMiddleware
-from src.api.routers import admin, auth_router, documents, drafting, lod, query, redline, review, translation
+from src.api.routers import admin, auth_router, documents, drafting, folders, lod, query, redline, review, translation
 from src.config import get_settings
 from src.logging_config import configure_logging
 
@@ -65,6 +65,7 @@ app.include_router(redline.router)
 app.include_router(translation.router)
 app.include_router(lod.router)
 app.include_router(drafting.router)
+app.include_router(folders.router)
 
 
 @app.get("/health")

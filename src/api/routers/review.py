@@ -20,7 +20,7 @@ from src.db.models import ParallelReview, Tenant, User
 from src.db.session import get_db
 from src.export.docx import DOCX_MEDIA, docx_filename, review_to_docx
 from src.providers.factory import LLMTask, get_tenant_task_llm
-from src.review.engine import ReviewQuestion, run_review, slugify_key
+from src.review.engine import ReviewQuestion, run_review, slugify_key, suggest_columns
 from src.review.loader import load_document_texts
 
 router = APIRouter(prefix="/review", tags=["review"])
@@ -47,6 +47,14 @@ class CreateReviewRequest(BaseModel):
 
 class AddColumnsRequest(BaseModel):
     questions: list[QuestionIn] = Field(min_length=1)
+
+
+class SuggestColumnsRequest(BaseModel):
+    instruction: str = Field(min_length=1, max_length=4000)
+
+
+class SuggestColumnsResponse(BaseModel):
+    questions: list[dict]
 
 
 class ReviewSummary(BaseModel):
@@ -160,6 +168,20 @@ async def create_review(
                "documents": len(doc_ids), "questions": len(questions)},
     )
     return _detail(review)
+
+
+@router.post("/suggest-columns", response_model=SuggestColumnsResponse)
+async def suggest_review_columns(
+    body: SuggestColumnsRequest,
+    current_user: User = Depends(require_editor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Derive review columns from a free-text request (the user can then edit them)."""
+    llm = await _tenant_llm(db, current_user.tenant_id)
+    cols = await suggest_columns(llm, body.instruction)
+    if not cols:
+        raise HTTPException(422, detail="Could not derive columns from that request. Try rephrasing.")
+    return SuggestColumnsResponse(questions=cols)
 
 
 @router.get("/", response_model=list[ReviewSummary])

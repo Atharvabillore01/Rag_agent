@@ -56,9 +56,11 @@ export const auth = {
 }
 
 export const documents = {
-  list:    (skip = 0, limit = 50) => request('GET', `/documents/?skip=${skip}&limit=${limit}`),
+  list:    (skip = 0, limit = 50, folderId = null) =>
+    request('GET', `/documents/?skip=${skip}&limit=${limit}${folderId ? `&folder_id=${encodeURIComponent(folderId)}` : ''}`),
   get:     (id)                   => request('GET', `/documents/${id}`),
   viewUrl: (id)                   => request('GET', `/documents/${id}/view-url`),
+  move:    (id, folder_id)        => request('PATCH', `/documents/${id}/folder`, { folder_id }),
   delete:  (id)                   => request('DELETE', `/documents/${id}`),
   upload: async (file) => {
     const fd = new FormData()
@@ -101,11 +103,12 @@ export const documents = {
 }
 
 export const review = {
-  list:       ()          => request('GET',    '/review/'),
-  get:        (id)        => request('GET',    `/review/${id}`),
-  create:     (data)      => request('POST',   '/review/', data),
-  addColumns: (id, data)  => request('POST',   `/review/${id}/columns`, data),
-  delete:     (id)        => request('DELETE', `/review/${id}`),
+  list:           ()            => request('GET',    '/review/'),
+  get:            (id)          => request('GET',    `/review/${id}`),
+  create:         (data)        => request('POST',   '/review/', data),
+  addColumns:     (id, data)    => request('POST',   `/review/${id}/columns`, data),
+  suggestColumns: (instruction) => request('POST',   '/review/suggest-columns', { instruction }),
+  delete:         (id)          => request('DELETE', `/review/${id}`),
 }
 
 export const redline = {
@@ -134,6 +137,13 @@ export const drafting = {
   get:    (id)    => request('GET',    `/drafting/${id}`),
   create: (data)  => request('POST',   '/drafting/', data),
   delete: (id)    => request('DELETE', `/drafting/${id}`),
+}
+
+export const folders = {
+  list:   ()          => request('GET',    '/folders/'),
+  create: (name)      => request('POST',   '/folders/', { name }),
+  rename: (id, name)  => request('PATCH',  `/folders/${id}`, { name }),
+  delete: (id)        => request('DELETE', `/folders/${id}`),
 }
 
 export const admin = {

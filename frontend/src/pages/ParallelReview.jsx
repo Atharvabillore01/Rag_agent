@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { motion } from 'framer-motion'
 import {
-  Table2, Plus, Trash2, X, Play, FileText, Loader2, ChevronRight, RotateCcw, FileDown,
+  Table2, Plus, Trash2, X, Play, FileText, Loader2, ChevronRight, RotateCcw, FileDown, Sparkles,
 } from 'lucide-react'
 import { documents as docsApi, review as reviewApi, downloadFile } from '../api'
 
@@ -22,6 +22,8 @@ export default function ParallelReview() {
   const [error, setError]               = useState('')
   const [search, setSearch]             = useState('')
   const [addOpen, setAddOpen]           = useState(false)
+  const [describe, setDescribe]         = useState('')      // free-text → auto columns
+  const [suggesting, setSuggesting]     = useState(false)
 
   const loadRecent = useCallback(async () => {
     try { setRecent(await reviewApi.list()) } catch { /* non-fatal */ }
@@ -49,8 +51,21 @@ export default function ParallelReview() {
   function addQuestionRow() { setQuestions(qs => [...qs, { header: '', question: '' }]) }
   function removeQuestionRow(i) { setQuestions(qs => qs.filter((_, idx) => idx !== i)) }
 
+  async function autoColumns() {
+    if (!describe.trim() || suggesting) return
+    setError(''); setSuggesting(true)
+    try {
+      const { questions: cols } = await reviewApi.suggestColumns(describe.trim())
+      if (cols?.length) setQuestions(cols.map(c => ({ header: c.header, question: c.question })))
+    } catch (e) {
+      setError(e.message || 'Could not generate columns.')
+    } finally {
+      setSuggesting(false)
+    }
+  }
+
   function resetBuilder() {
-    setCurrent(null); setSelected(new Set()); setQuestions(STARTER_QUESTIONS); setName(''); setError('')
+    setCurrent(null); setSelected(new Set()); setQuestions(STARTER_QUESTIONS); setName(''); setError(''); setDescribe('')
   }
 
   const validQuestions = questions.filter(q => q.header.trim() && q.question.trim())
@@ -158,6 +173,23 @@ export default function ParallelReview() {
               {/* Questions */}
               <div className="bg-white rounded-2xl border border-slate-200 p-5">
                 <h3 className="font-display font-semibold text-duck-navy text-sm mb-3">Questions (columns)</h3>
+
+                {/* Auto-generate columns from a free-text description */}
+                <div className="mb-4 bg-duck-blue-pale/50 border border-blue-100 rounded-xl p-3">
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">
+                    Describe what to extract — we'll build the columns
+                  </label>
+                  <textarea value={describe} onChange={e => setDescribe(e.target.value)} rows={2}
+                    className="input-field text-sm resize-none"
+                    placeholder="e.g. principal amount, next due date, penalty, cross default, foreclosure charges" />
+                  <button onClick={autoColumns} disabled={!describe.trim() || suggesting}
+                    className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-duck-blue hover:underline disabled:opacity-50 disabled:no-underline">
+                    {suggesting
+                      ? <><Loader2 size={13} className="animate-spin" /> Generating…</>
+                      : <><Sparkles size={13} /> Auto-generate columns</>}
+                  </button>
+                </div>
+
                 <div className="space-y-2.5">
                   {questions.map((q, i) => (
                     <div key={i} className="flex gap-2 items-start">

@@ -207,6 +207,12 @@ class Document(Base):
     # RBAC scoping
     collection_tags: Mapped[list | None] = mapped_column(JSON)
 
+    # Folder / matter organization (feature-implementation-plan §23). SET NULL on
+    # folder delete so documents are unfiled, never cascaded away.
+    folder_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("folders.id", ondelete="SET NULL"), nullable=True
+    )
+
     page_count: Mapped[int | None] = mapped_column(Integer)
     file_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
 
@@ -596,4 +602,32 @@ class Draft(Base):
     __table_args__ = (
         Index("ix_drafts_tenant_id", "tenant_id"),
         Index("ix_drafts_tenant_created", "tenant_id", "created_at"),
+    )
+
+
+# ── Folders / matters (feature-implementation-plan §23) ───────────────────────
+
+class Folder(Base):
+    """A folder ("matter") for organizing documents within a tenant."""
+
+    __tablename__ = "folders"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_folders_tenant_id", "tenant_id"),
     )

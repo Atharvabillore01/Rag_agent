@@ -98,7 +98,7 @@ export default function Chat() {
             addCitation(msgId, event)
             break
           case 'final_answer':
-            finalizeMessage(msgId, event.answer, event.citations || [])
+            finalizeMessage(msgId, event.answer, event.citations || [], event.followups || [])
             break
           case 'error':
             setChatError(msgId, event.message)
@@ -156,6 +156,23 @@ export default function Chat() {
                 <AgentStatus steps={statusSteps} thoughts={thoughts} streaming={streaming} />
               )}
             </AnimatePresence>
+
+            {/* Suggested follow-ups for the latest answer */}
+            {!streaming && (() => {
+              const last = messages[messages.length - 1]
+              const fus = last && last.role === 'assistant' && last.status === 'done' ? (last.followups || []) : []
+              return fus.length > 0 ? (
+                <div className="max-w-3xl mx-auto px-4 flex flex-wrap gap-2">
+                  <span className="w-full text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Follow-up questions</span>
+                  {fus.map((q, i) => (
+                    <button key={i} onClick={() => send(q)}
+                      className="text-xs text-duck-blue bg-duck-blue-pale border border-blue-100 rounded-full px-3 py-1.5 hover:bg-blue-50 text-left transition-colors">
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              ) : null
+            })()}
 
             <div ref={bottomRef} />
           </div>

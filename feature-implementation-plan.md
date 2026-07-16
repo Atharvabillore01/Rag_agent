@@ -579,5 +579,74 @@ Note: this is TOTP MFA. Full SSO (SAML/OIDC) remains a separate, larger item —
 
 ---
 
+## 21. FEATURE — Parallel Review auto-columns (from free-text)
+
+### 21.1 What
+Close the gap flagged in §2.2: let a user describe what to extract in plain prose (even terse/typo'd) and auto-derive the column→question table, as in the demo. Composes with the audited Parallel Review engine (the derived columns feed the same run path; the user can still edit them).
+
+### 21.2 Components
+- **Engine** `suggest_columns(llm, instruction)` in `src/review/engine.py` — one JSON-mode call → `[{header, question}]` (defensive parse, capped, trimmed).
+- **API** `POST /review/suggest-columns` (editor) — `{instruction}` → `{questions:[...]}`; routed via the `extract` task; 422 if nothing derivable.
+- **Frontend** — a "Describe what to extract" input on the Parallel Review builder that calls the endpoint and fills the questions list (static-audited).
+
+### 21.3 Acceptance criteria
+- A messy prose request ("principal amount, next due date, penalty, cross default, forclosure charges") yields ≥4 well-formed columns covering those concepts, each with a header + a clear question.
+- Empty/garbage instruction → 422 (no crash).
+
+### 21.4 Status — DONE, audited (8/8)
+- [x] `suggest_columns` engine fn (JSON-mode, defensive, capped)
+- [x] `POST /review/suggest-columns` (editor, extract task, 422 when nothing derivable)
+- [x] Audit: typo'd prose → 6 clean columns covering the concepts; empty→none; endpoint; garbage→422
+- [x] Frontend: "Describe what to extract" input on the builder → auto-fills questions (static-audited)
+
+---
+
+## 22. FEATURE — Suggested follow-up questions
+
+### 22.1 What
+After a research answer, propose 2–4 concise follow-up questions grounded in the question + answer (the demo's "suggested follow-up questions"). Emitted in the `final_answer` event so the client can render clickable chips.
+
+### 22.2 Components
+- **Engine** `suggest_followups(question, answer, provider)` in `src/agent/generator.py` — one JSON-mode call → short question list; best-effort (returns [] on any failure).
+- **Loop** — after the answer is generated, generate follow-ups with the tenant provider and include them in `final_answer` (wrapped so it never breaks the answer). Only on the main answer path (not greetings/errors/no-results).
+- **Frontend** — clickable follow-up chips under the assistant message (if the chat store cleanly supports it).
+
+### 22.3 Acceptance criteria
+- `suggest_followups` returns 1–4 non-empty, short (<120 char) questions for a real Q/A; returns [] gracefully on empty/garbage or model failure.
+- The loop includes `followups` in `final_answer`; a failure in follow-up generation does not affect the answer itself.
+
+### 22.4 Status — DONE, audited (5/5)
+- [x] `suggest_followups` (generator.py) — JSON-mode, defensive, never raises.
+- [x] Loop emits `followups` in `final_answer` (best-effort; wrapped so a failure can't break the answer).
+- [x] Frontend: `finalizeMessage` carries followups; Chat renders clickable follow-up chips for the latest answer (static-audited, brace-balanced).
+- [x] Audit: live Groq produced 3 relevant/distinct/short follow-ups; empty inputs → [].
+
+---
+
+## 23. FEATURE — Folders / matter management
+
+### 23.1 What
+Organize documents into folders ("matters"), as in the demo's file library. Closes the §2.2 gap ("no folders/matters, no rename/move"). Flat folders for MVP (nesting deferred).
+
+### 23.2 Components
+- **DB** `Folder` (id, tenant_id, name, created_by, timestamps) + `Document.folder_id` (FK, **ondelete SET NULL** — deleting a folder unfiles its docs, never deletes them). Migration `0008`.
+- **API** `src/api/routers/folders.py`: `POST /folders` (create), `GET /folders` (list + per-folder doc counts), `PATCH /folders/{id}` (rename), `DELETE /folders/{id}` (delete → docs unfiled).
+- **Documents**: `PATCH /documents/{id}/folder` (move / unfile, validates folder belongs to tenant); `GET /documents/?folder_id=<id|unfiled>` filter; `folder_id` in the list item.
+- **Frontend**: folder list on Documents + a move action (static-audited).
+
+### 23.3 Acceptance criteria
+- Create/list(with counts)/rename/delete folders; delete unfiles docs (docs survive, folder_id NULL).
+- Move a doc into a folder; list filtered by folder_id returns only those; `unfiled` returns folder_id IS NULL.
+- Cross-tenant: can't move into another tenant's folder, can't see/rename/delete another tenant's folder (404).
+
+### 23.4 Status — DONE, audited (13/13)
+- [x] `Folder` model + `Document.folder_id` (SET NULL) + migration `0008` (applied; single head)
+- [x] Folders router: create / list-with-counts / rename / delete (registered)
+- [x] Documents: `PATCH /{id}/folder` move + `?folder_id=<id|unfiled>` filter + `folder_id` in responses
+- [x] Audit 13/13: CRUD, move, filter (folder + unfiled), rename, delete-unfiles (docs survive), tenant isolation, cleanup
+- [x] Frontend (static-audited): folder filter bar (browse by matter) + "New folder" + per-document move select
+
+---
+
 ## 6. Features 5–7 — specs to be expanded when reached
 Each remaining feature gets a §-section like Feature 1 (components / acceptance / audit) at the moment we start it, so specs stay honest to the code that exists then rather than guessed up front.

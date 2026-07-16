@@ -175,3 +175,35 @@ async def run_review(
 
     pairs = await asyncio.gather(*(_one(d) for d in docs))
     return {doc_id: res for doc_id, res in pairs}
+
+
+_COLUMN_SYSTEM = (
+    "You convert a lawyer's free-text request into a structured set of review columns for a "
+    "document-comparison table. Infer the distinct columns the user wants even if the request "
+    "is terse or has typos. Each column has a short 'header' (2-4 words, Title Case) and a "
+    "'question' (a clear instruction to answer for each document). Return a JSON object "
+    '{"columns": [{"header": "...", "question": "..."}, ...]} with 1-12 columns and nothing else.'
+)
+
+
+async def suggest_columns(llm: LLMProvider, instruction: str, *, max_columns: int = 12) -> list[dict]:
+    """Derive review columns ({header, question}) from a plain-language request."""
+    if not instruction or not instruction.strip():
+        return []
+    messages = [
+        Message(role="system", content=_COLUMN_SYSTEM),
+        Message(role="user", content=f"Request:\n{instruction.strip()}\n\nReturn the JSON."),
+    ]
+    resp = await _complete_with_retry(llm, messages, max_tokens=1200, temperature=0.0, json_mode=True)
+    parsed = _extract_json(resp.content)
+    raw = parsed.get("columns") if isinstance(parsed, dict) else None
+    out: list[dict] = []
+    if isinstance(raw, list):
+        for col in raw[:max_columns]:
+            if not isinstance(col, dict):
+                continue
+            header = str(col.get("header") or "").strip()
+            question = str(col.get("question") or "").strip()
+            if header and question:
+                out.append({"header": header[:120], "question": question[:2000]})
+    return out

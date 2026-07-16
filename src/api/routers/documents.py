@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.auth import require_editor, require_viewer
 from src.api.deps import get_object_store_dep, get_vector_store_dep
 from src.config import get_settings
-from src.db.models import AuditLog, Document, DocumentStatus, Tenant, User
+from src.db.models import AuditLog, Document, DocumentStatus, Folder, Tenant, User
 from src.db.session import AsyncSessionLocal, get_db
 from src.ingestion.content_scan import content_matches
 from src.ingestion.parsers.router import detect_file_type
@@ -49,6 +49,11 @@ class DocumentListItem(BaseModel):
     status: str
     page_count: int | None
     created_at: str
+    folder_id: str | None = None
+
+
+class MoveFolderRequest(BaseModel):
+    folder_id: str | None = None
 
 
 @router.post("/upload", response_model=DocumentResponse, status_code=202)
@@ -210,13 +215,15 @@ async def list_documents(
     db: AsyncSession = Depends(get_db),
     skip: int = 0,
     limit: int = 50,
+    folder_id: str | None = None,   # a folder id, or "unfiled" for documents with no folder
 ):
+    stmt = select(Document).where(Document.tenant_id == current_user.tenant_id)
+    if folder_id == "unfiled":
+        stmt = stmt.where(Document.folder_id.is_(None))
+    elif folder_id:
+        stmt = stmt.where(Document.folder_id == folder_id)
     result = await db.execute(
-        select(Document)
-        .where(Document.tenant_id == current_user.tenant_id)
-        .offset(skip)
-        .limit(limit)
-        .order_by(Document.created_at.desc())
+        stmt.offset(skip).limit(limit).order_by(Document.created_at.desc())
     )
     docs = result.scalars().all()
     return [
@@ -227,9 +234,50 @@ async def list_documents(
             status=d.status.value,
             page_count=d.page_count,
             created_at=d.created_at.isoformat(),
+            folder_id=d.folder_id,
         )
         for d in docs
     ]
+
+
+@router.patch("/{document_id}/folder", response_model=DocumentListItem)
+async def move_document(
+    document_id: str,
+    body: MoveFolderRequest,
+    current_user: User = Depends(require_editor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Move a document into a folder (or unfile it with folder_id=null)."""
+    result = await db.execute(
+        select(Document).where(
+            Document.id == document_id, Document.tenant_id == current_user.tenant_id
+        )
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if body.folder_id is not None:
+        f = await db.execute(
+            select(Folder).where(
+                Folder.id == body.folder_id, Folder.tenant_id == current_user.tenant_id
+            )
+        )
+        if f.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Folder not found")
+
+    doc.folder_id = body.folder_id
+    await db.commit()
+    await db.refresh(doc)
+    return DocumentListItem(
+        document_id=doc.id,
+        filename=doc.filename,
+        file_type=doc.file_type,
+        status=doc.status.value,
+        page_count=doc.page_count,
+        created_at=doc.created_at.isoformat(),
+        folder_id=doc.folder_id,
+    )
 
 
 @router.get("/{document_id}", response_model=DocumentListItem)
@@ -255,6 +303,7 @@ async def get_document(
         status=doc.status.value,
         page_count=doc.page_count,
         created_at=doc.created_at.isoformat(),
+        folder_id=doc.folder_id,
     )
 
 

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.agent.generator import _parse_answer_and_citations, stream_answer
+from src.agent.generator import _parse_answer_and_citations, stream_answer, suggest_followups
 from src.agent.intent_router import IntentResult, classify_intent
 from src.agent.planner import PlanResult, SubQuestion, plan_query
 from src.agent.retriever import RetrievedChunk, hybrid_retrieve
@@ -266,5 +266,16 @@ async def run_agent_loop(
     for citation in citations:
         yield event("citation", **_citation_payload(citation))
 
-    yield event("final_answer", answer=answer_text, citations=[_citation_payload(c) for c in citations])
+    # Suggested follow-ups — best-effort; a failure must not affect the answer.
+    try:
+        followups = await suggest_followups(query, answer_text, provider=tenant_provider)
+    except Exception:  # noqa: BLE001
+        followups = []
+
+    yield event(
+        "final_answer",
+        answer=answer_text,
+        citations=[_citation_payload(c) for c in citations],
+        followups=followups,
+    )
     yield event("done")
