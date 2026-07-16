@@ -1,7 +1,7 @@
 const BASE = '/api'
 
 function getToken() {
-  return localStorage.getItem('ida_token')
+  return localStorage.getItem('duckvault_token')
 }
 
 function headers(extra = {}) {
@@ -25,9 +25,34 @@ async function request(method, path, body) {
   return res.json()
 }
 
+// Fetch a binary attachment (e.g. .docx export) with auth and trigger a browser
+// download. Reads the filename from Content-Disposition, falling back if absent.
+export async function downloadFile(path, fallbackName = 'download') {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { Authorization: `Bearer ${getToken()}` },
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Download failed')
+  }
+  const blob = await res.blob()
+  const cd = res.headers.get('Content-Disposition') || ''
+  const match = cd.match(/filename="?([^"]+)"?/)
+  const name = match ? match[1] : fallbackName
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
 export const auth = {
   login:    (email, password) => request('POST', '/auth/login',    { email, password }),
   register: (email, password, tenant_name) => request('POST', '/auth/register', { email, password, tenant_name }),
+  logout:   () => request('POST', '/auth/logout'),   // G14: server-side token revocation
 }
 
 export const documents = {
@@ -73,6 +98,42 @@ export const documents = {
       }
     }
   },
+}
+
+export const review = {
+  list:       ()          => request('GET',    '/review/'),
+  get:        (id)        => request('GET',    `/review/${id}`),
+  create:     (data)      => request('POST',   '/review/', data),
+  addColumns: (id, data)  => request('POST',   `/review/${id}/columns`, data),
+  delete:     (id)        => request('DELETE', `/review/${id}`),
+}
+
+export const redline = {
+  list:   ()      => request('GET',    '/redline/'),
+  get:    (id)    => request('GET',    `/redline/${id}`),
+  create: (data)  => request('POST',   '/redline/', data),
+  delete: (id)    => request('DELETE', `/redline/${id}`),
+}
+
+export const translation = {
+  list:   ()      => request('GET',    '/translation/'),
+  get:    (id)    => request('GET',    `/translation/${id}`),
+  create: (data)  => request('POST',   '/translation/', data),
+  delete: (id)    => request('DELETE', `/translation/${id}`),
+}
+
+export const lod = {
+  list:   ()      => request('GET',    '/lod/'),
+  get:    (id)    => request('GET',    `/lod/${id}`),
+  create: (data)  => request('POST',   '/lod/', data),
+  delete: (id)    => request('DELETE', `/lod/${id}`),
+}
+
+export const drafting = {
+  list:   ()      => request('GET',    '/drafting/'),
+  get:    (id)    => request('GET',    `/drafting/${id}`),
+  create: (data)  => request('POST',   '/drafting/', data),
+  delete: (id)    => request('DELETE', `/drafting/${id}`),
 }
 
 export const admin = {

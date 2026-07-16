@@ -250,24 +250,21 @@ async def run_agent_loop(
         yield event("token_delta", token=token)
 
     full_answer = "".join(full_parts)
-    answer_text, citations = _parse_answer_and_citations(full_answer, all_chunks)
+    answer_text, citations = _parse_answer_and_citations(full_answer, all_chunks, id_to_name)
 
-    for citation in citations:
-        yield event(
-            "citation",
-            document_id=citation.document_id,
-            chunk_id=citation.chunk_id,
-            page_number=citation.page_number,
-            section_heading=citation.section_heading,
-        )
-
-    yield event("final_answer", answer=answer_text, citations=[
-        {
+    def _citation_payload(c) -> dict:
+        return {
+            "number": c.number,
             "document_id": c.document_id,
             "chunk_id": c.chunk_id,
             "page_number": c.page_number,
             "section_heading": c.section_heading,
+            "filename": c.filename,
+            "snippet": c.snippet,
         }
-        for c in citations
-    ])
+
+    for citation in citations:
+        yield event("citation", **_citation_payload(citation))
+
+    yield event("final_answer", answer=answer_text, citations=[_citation_payload(c) for c in citations])
     yield event("done")

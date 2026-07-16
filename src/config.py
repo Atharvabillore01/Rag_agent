@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     )
 
     # ── App ──────────────────────────────────────────────────────────────────
-    app_name: str = "Agentic RAG Platform"
+    app_name: str = "DuckVault"
     debug: bool = False
     secret_key: str = _INSECURE_SECRET
     access_token_expire_minutes: int = 60 * 24  # 24 h
@@ -22,6 +22,25 @@ class Settings(BaseSettings):
     # token for any user/tenant/role, so the placeholder default must never be
     # used to actually run the app — see the validator below.
     cors_allow_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+
+    # ── Registration (G5) ──────────────────────────────────────────────────────
+    # Self-serve registration is OFF by default: it provisions a brand-new tenant
+    # with an org_admin for the caller, so leaving it open lets anyone mint an
+    # admin account. Enable explicitly for dev/self-serve, or restrict to an
+    # email-domain allowlist.
+    allow_open_registration: bool = False
+    registration_allowed_domains: list[str] = []
+    # G6: per-IP throttle on /auth/login and /auth/register (attempts per minute).
+    auth_rate_limit_per_minute: int = 10
+    # G14: JWT hardening — issuer/audience claims are set and verified.
+    jwt_issuer: str = "duckvault"
+    jwt_audience: str = "duckvault-api"
+    # G15: password policy (bcrypt caps at 72 bytes; enforced in validate_password).
+    min_password_length: int = 8
+    # G11: at-rest field encryption key for sensitive content columns. If empty,
+    # a key is derived from SECRET_KEY (so it works out of the box); set a
+    # dedicated key to rotate it independently of SECRET_KEY.
+    field_encryption_key: str = ""
 
     @model_validator(mode="after")
     def _reject_insecure_secret(self) -> "Settings":
@@ -31,6 +50,26 @@ class Settings(BaseSettings):
                 "SECRET_KEY is set to the insecure default. Generate a strong "
                 "value (e.g. `python -c \"import secrets; print(secrets.token_hex(32))\"`) "
                 "and set SECRET_KEY in your .env before starting."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_default_infra_creds(self) -> "Settings":
+        # In production (debug=False) refuse to boot on default/insecure
+        # infrastructure credentials. Local dev (debug=True) is unaffected.
+        if self.debug:
+            return self
+        problems: list[str] = []
+        if self.s3_access_key == "minioadmin" or self.s3_secret_key == "minioadmin":
+            problems.append("S3/MinIO uses the default 'minioadmin' credentials")
+        if "rag:rag@" in self.database_url:
+            problems.append("DATABASE_URL uses the default 'rag:rag' credentials")
+        if not self.qdrant_api_key:
+            problems.append("QDRANT_API_KEY is empty")
+        if problems:
+            raise ValueError(
+                "Insecure default infrastructure credentials detected with DEBUG=false. "
+                "Set real credentials (or DEBUG=true for local dev): " + "; ".join(problems)
             )
         return self
 

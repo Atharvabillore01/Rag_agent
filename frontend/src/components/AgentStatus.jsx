@@ -58,7 +58,7 @@ export default function AgentStatus({ steps = [], thoughts = [], streaming }) {
           onClick={() => setPipelineOpen(o => !o)}
           className="flex items-center gap-2 w-full text-left group"
         >
-          <Activity size={12} className="text-ida-blue flex-shrink-0" />
+          <Activity size={12} className="text-duck-blue flex-shrink-0" />
           <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-widest flex-1">
             AI Agent Pipeline
           </span>
@@ -69,7 +69,7 @@ export default function AgentStatus({ steps = [], thoughts = [], streaming }) {
           )}
           <ChevronDown
             size={13}
-            className={`text-slate-400 group-hover:text-ida-blue transition-all ${pipelineOpen ? 'rotate-180' : ''}`}
+            className={`text-slate-400 group-hover:text-duck-blue transition-all ${pipelineOpen ? 'rotate-180' : ''}`}
           />
         </button>
 
@@ -102,13 +102,13 @@ export default function AgentStatus({ steps = [], thoughts = [], streaming }) {
                       step.done
                         ? 'bg-emerald-50'
                         : isActive
-                          ? 'bg-ida-blue-pale animate-pulse-r'
+                          ? 'bg-duck-blue-pale animate-pulse-r'
                           : 'bg-slate-50'
                     }`}>
                       {step.done
                         ? <CheckCircle2 size={14} className="text-emerald-500" />
                         : isActive
-                          ? <Icon size={14} className="text-ida-blue animate-spin-slow" />
+                          ? <Icon size={14} className="text-duck-blue animate-spin-slow" />
                           : <Icon size={14} className="text-slate-300" />}
                     </div>
                     {i < steps.length - 1 && (
@@ -117,7 +117,7 @@ export default function AgentStatus({ steps = [], thoughts = [], streaming }) {
                   </div>
 
                   <p className={`text-xs leading-tight flex-1 ${
-                    step.done ? 'text-slate-500' : isActive ? 'text-ida-blue font-medium' : 'text-slate-400'
+                    step.done ? 'text-slate-500' : isActive ? 'text-duck-blue font-medium' : 'text-slate-400'
                   }`}>
                     {step.message}
                   </p>
@@ -143,7 +143,7 @@ export default function AgentStatus({ steps = [], thoughts = [], streaming }) {
                   <div className="mt-3 border-t border-slate-100 pt-2.5">
                     <button
                       onClick={() => setThoughtsOpen(o => !o)}
-                      className="flex items-center gap-1.5 text-[11px] text-slate-500 hover:text-ida-blue transition-colors w-full text-left"
+                      className="flex items-center gap-1.5 text-[11px] text-slate-500 hover:text-duck-blue transition-colors w-full text-left"
                     >
                       <Lightbulb size={12} className="text-amber-400" />
                       <span className="font-medium">Agent reasoning</span>

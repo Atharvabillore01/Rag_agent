@@ -1,97 +1,63 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { FileText, Search, Languages, GitCompareArrows } from 'lucide-react'
 
-const PROJECTS = [
-  {
-    name: 'Lata Mangeshkar Auditorium',
-    type: 'Cultural & Community',
-    img:  'https://www.idaindore.org/Content/img/slider/Lata-Mangeshkar.jpg',
-  },
-  {
-    name: 'ISBT MR-10 Bus Terminal',
-    type: 'Transport Infrastructure',
-    img:  'https://www.idaindore.org/Content/img/slider/ISBT-MR10_3.jpg',
-  },
-  {
-    name: 'Khajrana Flyover',
-    type: 'Road Infrastructure',
-    img:  'https://www.idaindore.org/Content/img/slider/KHAJRANA-FLYOVER.jpg',
-  },
-  {
-    name: 'Bhawarkua Development',
-    type: 'Urban Development',
-    img:  'https://www.idaindore.org/Content/img/slider/bhawarkua.jpg',
-  },
-  {
-    name: 'Nayata Mindla Project',
-    type: 'Residential Scheme',
-    img:  'https://www.idaindore.org/Content/img/slider/NAYATA-MINDLA_2.jpg',
-  },
+// Self-contained product illustration — no external image dependencies, so it
+// renders identically offline and in air-gapped deployments.
+const SCENES = [
+  { icon: Search,           label: 'Ask & cite',   caption: 'Answers grounded in your files' },
+  { icon: Languages,        label: 'OCR & translate', caption: 'Scanned & multi-language docs' },
+  { icon: GitCompareArrows, label: 'Compare',      caption: 'Redline & parallel review' },
+  { icon: FileText,         label: 'Draft',        caption: 'Generate documents in context' },
 ]
 
 export default function CityIllustration({ className = '' }) {
   const [current, setCurrent] = useState(0)
 
   useEffect(() => {
-    const t = setInterval(() => setCurrent(c => (c + 1) % PROJECTS.length), 4000)
+    const t = setInterval(() => setCurrent(c => (c + 1) % SCENES.length), 4000)
     return () => clearInterval(t)
   }, [])
 
-  const proj = PROJECTS[current]
+  const scene = SCENES[current]
+  const SceneIcon = scene.icon
 
   return (
-    <div className={`relative rounded-2xl overflow-hidden shadow-elevated ${className}`}
-         style={{ aspectRatio: '16/9' }}>
-      {/* Rotating property photo */}
-      <AnimatePresence mode="wait">
-        <motion.img
-          key={current}
-          src={proj.img}
-          alt={proj.name}
-          initial={{ opacity: 0, scale: 1.06 }}
-          animate={{ opacity: 1, scale: 1 }}
-          exit={{ opacity: 0, scale: 0.97 }}
-          transition={{ duration: 0.9, ease: 'easeInOut' }}
-          className="absolute inset-0 w-full h-full object-cover"
-        />
-      </AnimatePresence>
+    <div
+      className={`relative rounded-2xl overflow-hidden shadow-elevated bg-duck-navy ${className}`}
+      style={{ aspectRatio: '16/9' }}
+    >
+      {/* Ambient glows */}
+      <div className="absolute -top-16 -right-10 w-56 h-56 rounded-full"
+           style={{ background: 'radial-gradient(circle, rgba(26,86,219,0.45) 0%, transparent 70%)' }} />
+      <div className="absolute -bottom-20 -left-8 w-56 h-56 rounded-full"
+           style={{ background: 'radial-gradient(circle, rgba(245,166,35,0.20) 0%, transparent 70%)' }} />
+      <div className="absolute inset-0 opacity-[0.10]"
+           style={{ backgroundImage: 'radial-gradient(circle, #ffffff 1px, transparent 1px)', backgroundSize: '22px 22px' }} />
 
-      {/* Gradient overlay — bottom strong, top subtle */}
-      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
-
-      {/* IDA badge top-left */}
-      <div className="absolute top-3 left-3 flex items-center gap-2 px-2.5 py-1.5 rounded-lg
-                      bg-white/15 backdrop-blur-sm border border-white/20">
-        <img
-          src="https://www.idaindore.org/assets/img/logo.png"
-          alt="IDA"
-          className="h-5 w-auto object-contain"
-        />
-        <span className="text-white text-[11px] font-bold tracking-wide">IDA Project</span>
+      {/* Centered rotating scene */}
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-6">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={current}
+            initial={{ opacity: 0, scale: 0.85, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.9, y: -8 }}
+            transition={{ duration: 0.5, ease: 'easeInOut' }}
+            className="flex flex-col items-center"
+          >
+            <div className="w-16 h-16 rounded-2xl bg-white/10 border border-white/15 backdrop-blur-sm flex items-center justify-center mb-3">
+              <SceneIcon size={28} className="text-white" />
+            </div>
+            <p className="text-white font-display font-bold text-lg leading-tight">{scene.label}</p>
+            <p className="text-white/50 text-xs mt-0.5">{scene.caption}</p>
+          </motion.div>
+        </AnimatePresence>
       </div>
-
-      {/* Project name overlay */}
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={current}
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -6 }}
-          transition={{ duration: 0.45 }}
-          className="absolute bottom-0 left-0 right-0 p-4"
-        >
-          <p className="text-white/60 text-[10px] font-semibold uppercase tracking-widest mb-0.5">
-            {proj.type}
-          </p>
-          <p className="text-white font-display font-bold text-base leading-tight">
-            {proj.name}
-          </p>
-        </motion.div>
-      </AnimatePresence>
 
       {/* Dot indicators */}
       <div className="absolute bottom-4 right-4 flex gap-1.5">
-        {PROJECTS.map((_, i) => (
+        {SCENES.map((_, i) => (
           <button
             key={i}
             onClick={() => setCurrent(i)}

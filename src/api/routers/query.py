@@ -1,9 +1,10 @@
 """Query / agentic retrieval endpoints — SSE streaming (§4, §8.2)."""
 
 import json
+import logging
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -17,6 +18,7 @@ from src.storage.vector import VectorStore
 
 router = APIRouter(prefix="/query", tags=["query"])
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 class QueryRequest(BaseModel):
@@ -28,6 +30,24 @@ class QueryRequest(BaseModel):
 def _sse_event(event_type: str, data: dict, seq: int) -> str:
     payload = {"event_type": event_type, "seq": seq, **data}
     return f"data: {json.dumps(payload)}\n\n"
+
+
+async def _enforce_daily_quota(cache: CacheClient, current_user: User) -> None:
+    """G8: enforce a per-tenant daily query quota (demo tenants get the stricter
+    demo cap). Counts only real queries — cache hits are checked before this and
+    served free. Raises 429 once the cap is exceeded."""
+    if current_user.role.value == "demo":
+        count = await cache.incr_demo_queries(current_user.tenant_id)
+        limit = settings.rate_limit_demo_qpd
+    else:
+        count = await cache.incr_daily_queries(current_user.tenant_id)
+        limit = settings.rate_limit_default_qpd
+    if count > limit:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Daily query quota reached ({limit} queries). Resets in 24 hours.",
+            headers={"Retry-After": "3600"},
+        )
 
 
 @router.post("/stream")
@@ -49,6 +69,10 @@ async def stream_query(
     cached = await cache.get_query_cache(
         current_user.tenant_id, body.question, body.collection_tags
     )
+
+    # G8: enforce the daily query quota on real (non-cached) queries only.
+    if not cached:
+        await _enforce_daily_quota(cache, current_user)
 
     context = AgentContext(
         tenant_id=current_user.tenant_id,
@@ -77,6 +101,7 @@ async def stream_query(
 
                 # Buffer for mobile reconnect replay (§8.2)
                 await cache.push_stream_event(
+                    current_user.tenant_id,
                     query_id,
                     {"event_type": agent_event.event_type, **agent_event.payload},
                     ttl=settings.stream_buffer_ttl_seconds,
@@ -95,7 +120,10 @@ async def stream_query(
                     )
 
         except Exception as exc:
-            yield _sse_event("error", {"message": str(exc)}, 9999)
+            # G16: never stream raw internals to the client — log server-side,
+            # return a generic message.
+            logger.error("query stream failed for tenant=%s: %s", current_user.tenant_id, exc, exc_info=exc)
+            yield _sse_event("error", {"message": "An internal error occurred while processing your query."}, 9999)
             yield _sse_event("done", {}, 10000)
 
     return StreamingResponse(
@@ -117,7 +145,7 @@ async def replay_query_stream(
     cache: CacheClient = Depends(get_cache_dep),
 ):
     """Replay buffered stream events for mobile reconnect (§8.2)."""
-    events = await cache.get_stream_events(query_id, after_seq=last_seq)
+    events = await cache.get_stream_events(current_user.tenant_id, query_id, after_seq=last_seq)
 
     async def replay_generator():
         for i, event in enumerate(events):

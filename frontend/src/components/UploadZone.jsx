@@ -19,7 +19,7 @@ function FileRow({ f, onRemove }) {
   const Icon = icons[f.state] || File
   const colors = {
     idle: 'text-slate-400',
-    uploading: 'text-ida-blue animate-spin-slow',
+    uploading: 'text-duck-blue animate-spin-slow',
     done: 'text-emerald-500',
     error: 'text-red-500',
   }
@@ -85,8 +85,8 @@ export default function UploadZone({ onUploaded }) {
         {...getRootProps()}
         className={`relative rounded-2xl border-2 border-dashed transition-all duration-200 cursor-pointer overflow-hidden
           ${isDragActive
-            ? 'border-ida-blue bg-ida-blue-pale scale-[1.01] shadow-card-h'
-            : 'border-slate-200 bg-white hover:border-ida-blue hover:bg-ida-blue-pale/40'
+            ? 'border-duck-blue bg-duck-blue-pale scale-[1.01] shadow-card-h'
+            : 'border-slate-200 bg-white hover:border-duck-blue hover:bg-duck-blue-pale/40'
           }`}
       >
         <input {...getInputProps()} />
@@ -99,7 +99,7 @@ export default function UploadZone({ onUploaded }) {
             animate={isDragActive ? { scale: [1, 1.1, 1] } : {}}
             transition={{ repeat: Infinity, duration: 1 }}
             className={`w-14 h-14 rounded-2xl flex items-center justify-center mb-4 ${
-              isDragActive ? 'bg-ida-blue text-white' : 'bg-slate-100 text-slate-400'
+              isDragActive ? 'bg-duck-blue text-white' : 'bg-slate-100 text-slate-400'
             }`}
           >
             <UploadCloud size={26} />

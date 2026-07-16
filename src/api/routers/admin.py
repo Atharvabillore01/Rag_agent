@@ -43,7 +43,13 @@ async def create_user(
     current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    from src.api.auth import hash_password
+    from src.api.auth import hash_password, validate_password
+
+    # G15: apply the password policy to admin-created users too.
+    try:
+        validate_password(body.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     existing = await db.execute(
         select(User).where(User.email == body.email, User.tenant_id == current_user.tenant_id)

@@ -16,24 +16,25 @@ function hydrateUser(token) {
     tenant_id: raw.tenant_id,
     role:      raw.role,
     email:     raw.email,
+    domain:    raw.domain || 'generic',
     exp:       raw.exp,
   }
 }
 
 export const useAuthStore = create((set) => ({
-  token: localStorage.getItem('ida_token') || null,
+  token: localStorage.getItem('duckvault_token') || null,
   user:  (() => {
-    const t = localStorage.getItem('ida_token')
+    const t = localStorage.getItem('duckvault_token')
     return t ? hydrateUser(t) : null
   })(),
 
   login(token) {
-    localStorage.setItem('ida_token', token)
+    localStorage.setItem('duckvault_token', token)
     set({ token, user: hydrateUser(token) })
   },
 
   logout() {
-    localStorage.removeItem('ida_token')
+    localStorage.removeItem('duckvault_token')
     set({ token: null, user: null })
   },
 }))

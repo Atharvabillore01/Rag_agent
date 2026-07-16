@@ -2,13 +2,20 @@ import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   FileText, Settings, LogOut, ChevronRight,
-  Plus, Trash2, MessagesSquare, X, Activity,
+  Plus, Trash2, MessagesSquare, X, Activity, Table2, GitCompareArrows, Languages, CalendarClock, PenLine,
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import { useChatStore } from '../stores/chatStore'
+import { auth as authApi } from '../api'
+import DuckVaultLogo from './DuckVaultLogo'
 
 const NAV = [
-  { to: '/documents', icon: FileText, label: 'Documents', sub: 'Manage files' },
+  { to: '/documents', icon: FileText, label: 'Documents',       sub: 'Manage files' },
+  { to: '/review',    icon: Table2,           label: 'Parallel Review', sub: 'Compare documents' },
+  { to: '/redline',   icon: GitCompareArrows, label: 'Redline',         sub: 'Diff two documents' },
+  { to: '/translation', icon: Languages,      label: 'Translation',     sub: 'Translate a document' },
+  { to: '/lod',         icon: CalendarClock,  label: 'List of Dates',   sub: 'Build a chronology' },
+  { to: '/drafting',    icon: PenLine,        label: 'Drafting',        sub: 'Draft from documents' },
 ]
 
 const ROLE_LABELS = {
@@ -29,7 +36,10 @@ export default function Sidebar({ onClose }) {
   const isAdmin  = user?.role === 'org_admin'
   const initials = user?.email ? user.email.slice(0, 2).toUpperCase() : 'U'
 
-  function handleLogout() { logout(); navigate('/login') }
+  async function handleLogout() {
+    try { await authApi.logout() } catch { /* best-effort revoke */ }
+    logout(); navigate('/login')
+  }
 
   function handleNewChat() {
     newSession(); navigate('/chat'); onClose?.()
@@ -51,11 +61,7 @@ export default function Sidebar({ onClose }) {
           onClick={() => { navigate('/chat'); onClose?.() }}
           className="hover:opacity-80 transition-opacity"
         >
-          <img
-            src="https://www.idaindore.org/assets/img/logo.png"
-            alt="IDA Indore"
-            className="h-10 w-auto object-contain"
-          />
+          <DuckVaultLogo size="sm" />
         </button>
         <button
           onClick={onClose}

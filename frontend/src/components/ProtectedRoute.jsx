@@ -52,8 +52,8 @@ export default function ProtectedRoute() {
             <Menu size={20} />
           </button>
           <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-ida-saffron" />
-            <span className="font-display font-semibold text-slate-700 text-sm tracking-tight">IDA Assistant</span>
+            <div className="w-2 h-2 rounded-full bg-duck-saffron" />
+            <span className="font-display font-semibold text-slate-700 text-sm tracking-tight">DuckVault</span>
           </div>
         </div>
 

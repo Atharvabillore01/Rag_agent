@@ -43,7 +43,7 @@ function UserRow({ user, onRoleChange }) {
     >
       <td className="px-5 py-3.5">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full bg-ida-grad flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+          <div className="w-8 h-8 rounded-full bg-duck-grad flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
             {user.email.slice(0, 2).toUpperCase()}
           </div>
           <div>
@@ -73,7 +73,7 @@ function UserRow({ user, onRoleChange }) {
               >
                 {ROLES.map((r) => (
                   <button key={r} onClick={() => changeRole(r)}
-                    className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-50 transition-colors ${r === user.role ? 'font-semibold text-ida-blue' : 'text-slate-600'}`}>
+                    className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-50 transition-colors ${r === user.role ? 'font-semibold text-duck-blue' : 'text-slate-600'}`}>
                     {r}
                   </button>
                 ))}
@@ -116,12 +116,12 @@ function AddUserModal({ onClose, onAdded }) {
       onClick={(e) => e.target === e.currentTarget && onClose()}>
       <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }}
         className="card w-full max-w-md p-6">
-        <h3 className="font-display font-bold text-ida-navy mb-5">Add New User</h3>
+        <h3 className="font-display font-bold text-duck-navy mb-5">Add New User</h3>
         {error && <p className="text-xs text-red-500 mb-4 bg-red-50 rounded-lg p-3">{error}</p>}
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-xs font-semibold text-slate-600 mb-1.5">Email</label>
-            <input type="email" className="input-field" placeholder="user@idaindore.org"
+            <input type="email" className="input-field" placeholder="user@company.com"
               value={form.email} onChange={set('email')} required />
           </div>
           <div>
@@ -185,7 +185,7 @@ export default function Admin() {
             <Shield size={18} className="text-purple-600" />
           </div>
           <div>
-            <h2 className="font-display font-semibold text-ida-navy text-sm">Admin Panel</h2>
+            <h2 className="font-display font-semibold text-duck-navy text-sm">Admin Panel</h2>
             <p className="text-[11px] text-slate-400">User management · Audit logs · Workspace config</p>
           </div>
         </div>
@@ -202,7 +202,7 @@ export default function Admin() {
           <button key={id} onClick={() => setTab(id)}
             className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-xl border-b-2 transition-colors ${
               tab === id
-                ? 'text-ida-blue border-ida-blue bg-ida-blue-pale'
+                ? 'text-duck-blue border-duck-blue bg-duck-blue-pale'
                 : 'text-slate-500 border-transparent hover:text-slate-700 hover:bg-slate-50'
             }`}>
             <Icon size={14} />
@@ -282,7 +282,7 @@ export default function Admin() {
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                 <div className="grid grid-cols-2 gap-5">
                   {[
-                    { label: 'Organization Name', value: tenant.name,                icon: Building2, color: 'text-ida-navy'    },
+                    { label: 'Organization Name', value: tenant.name,                icon: Building2, color: 'text-duck-navy'    },
                     { label: 'Plan Tier',          value: tenant.tier,               icon: Shield,    color: 'text-purple-600'  },
                     { label: 'Document Quota',     value: tenant.quota_documents,    icon: FileText,  color: 'text-blue-600'    },
                     { label: 'Daily Query Limit',  value: tenant.quota_queries_daily, icon: Activity, color: 'text-emerald-600' },

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Send, MessageSquare, Sparkles, FileSearch, Building2, Map } from 'lucide-react'
+import { Send, MessageSquare, Sparkles, FileSearch, FileText, ListChecks } from 'lucide-react'
 import { streamQuery } from '../api'
 import { useChatStore } from '../stores/chatStore'
 import { useAuthStore } from '../stores/authStore'
@@ -8,10 +8,10 @@ import MessageBubble from '../components/MessageBubble'
 import AgentStatus from '../components/AgentStatus'
 
 const SUGGESTIONS = [
-  { icon: Building2, text: 'What are IDA\'s current development projects in Indore?',  label: 'Current Projects' },
-  { icon: FileSearch, text: 'How do I apply for a building permit or plan sanction?',   label: 'Permit Process'   },
-  { icon: Map,        text: 'What are the land use regulations for IDA zones?',         label: 'Land Use Zones'   },
-  { icon: Sparkles,   text: 'Tell me about current affordable housing schemes by IDA.', label: 'Housing Schemes'  },
+  { icon: FileSearch, text: 'Summarize this document and list its key points.',              label: 'Summarize'  },
+  { icon: ListChecks, text: 'What are the important dates, deadlines, and amounts in these files?', label: 'Key Facts' },
+  { icon: FileText,   text: 'Find the clauses about termination, liability, and payment terms.',    label: 'Find Clauses' },
+  { icon: Sparkles,   text: 'Compare these documents and highlight the differences.',          label: 'Compare'    },
 ]
 
 function WelcomeScreen({ onSuggest }) {
@@ -21,17 +21,17 @@ function WelcomeScreen({ onSuggest }) {
       animate={{ opacity: 1, y: 0 }}
       className="flex flex-col items-center justify-center h-full px-6 py-12 text-center"
     >
-      <div className="w-16 h-16 rounded-2xl bg-ida-grad flex items-center justify-center mb-5 shadow-elevated">
+      <div className="w-16 h-16 rounded-2xl bg-duck-grad flex items-center justify-center mb-5 shadow-elevated">
         <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-          <rect x="5"  y="19" width="4"  height="9" fill="white" opacity="0.7" rx="1"/>
-          <rect x="11" y="14" width="6"  height="14" fill="white" opacity="0.9" rx="1"/>
-          <rect x="19" y="10" width="7"  height="18" fill="white" rx="1"/>
-          <rect x="5"  y="27" width="21" height="3" fill="#E05D0D" opacity="0.9" rx="1"/>
+          <circle cx="16" cy="16" r="10"  stroke="white" strokeWidth="2.4" opacity="0.9"/>
+          <circle cx="16" cy="16" r="4.2" stroke="white" strokeWidth="2.2"/>
+          <circle cx="16" cy="16" r="1.5" fill="#F5A623"/>
+          <rect x="15" y="2"  width="2" height="4" rx="1" fill="white" opacity="0.8"/>
+          <rect x="15" y="26" width="2" height="4" rx="1" fill="white" opacity="0.8"/>
         </svg>
       </div>
-      <h1 className="text-2xl font-display font-bold text-ida-navy mb-1">IDA Knowledge Assistant</h1>
-      <p className="text-slate-500 text-sm mb-1">AI-powered document intelligence for Indore Development Authority</p>
-      <p className="text-slate-400 text-xs mb-8 font-medium">इंदौर विकास प्राधिकरण — जहाँ निर्माण ही लक्ष्य है</p>
+      <h1 className="text-2xl font-display font-bold text-duck-navy mb-1">Welcome to DuckVault</h1>
+      <p className="text-slate-500 text-sm mb-8">Ask your documents anything — grounded answers with citations.</p>
       <div className="w-full max-w-lg grid grid-cols-2 gap-3">
         {SUGGESTIONS.map(({ icon: Icon, text, label }) => (
           <motion.button
@@ -41,8 +41,8 @@ function WelcomeScreen({ onSuggest }) {
             onClick={() => onSuggest(text)}
             className="card-hover text-left p-4 flex flex-col gap-2.5 group"
           >
-            <div className="w-8 h-8 rounded-lg bg-ida-blue-pale flex items-center justify-center group-hover:bg-ida-blue group-hover:text-white transition-colors">
-              <Icon size={15} className="text-ida-blue group-hover:text-white transition-colors" />
+            <div className="w-8 h-8 rounded-lg bg-duck-blue-pale flex items-center justify-center group-hover:bg-duck-blue group-hover:text-white transition-colors">
+              <Icon size={15} className="text-duck-blue group-hover:text-white transition-colors" />
             </div>
             <div>
               <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">{label}</p>
@@ -124,18 +124,18 @@ export default function Chat() {
       {/* Header */}
       <div className="flex items-center px-6 py-4 bg-white border-b border-slate-100 flex-shrink-0">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-ida-blue-pale flex items-center justify-center">
-            <MessageSquare size={18} className="text-ida-blue" />
+          <div className="w-9 h-9 rounded-xl bg-duck-blue-pale flex items-center justify-center">
+            <MessageSquare size={18} className="text-duck-blue" />
           </div>
           <div>
-            <h2 className="font-display font-semibold text-ida-navy text-sm">AI Assistant</h2>
+            <h2 className="font-display font-semibold text-duck-navy text-sm">AI Assistant</h2>
             <p className="text-[11px] text-slate-400">
               {streaming
-                ? <span className="text-ida-blue font-medium flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-ida-blue animate-pulse inline-block" />
+                ? <span className="text-duck-blue font-medium flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-duck-blue animate-pulse inline-block" />
                     Processing your query…
                   </span>
-                : 'Ask about any IDA document, scheme, or project'}
+                : 'Ask about any document in your workspace'}
             </p>
           </div>
         </div>
@@ -171,7 +171,7 @@ export default function Chat() {
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Ask about IDA projects, permits, schemes, land records…"
+              placeholder="Ask about your documents, or describe what you need drafted…"
               rows={1}
               disabled={streaming}
               className="w-full resize-none input-field pr-4 py-3.5 text-sm leading-relaxed

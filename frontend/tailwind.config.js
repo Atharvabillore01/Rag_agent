@@ -4,7 +4,7 @@ export default {
   theme: {
     extend: {
       colors: {
-        ida: {
+        duck: {
           navy:          '#0D2545',
           'navy-mid':    '#1A3A6B',
           blue:          '#1A56DB',
@@ -29,8 +29,8 @@ export default {
         panel:      '4px 0 24px rgba(0,0,0,0.06)',
       },
       backgroundImage: {
-        'ida-grad':    'linear-gradient(135deg, #0D2545 0%, #1A3A6B 60%, #1A56DB 100%)',
-        'ida-btn':     'linear-gradient(135deg, #1A56DB 0%, #1648C0 100%)',
+        'duck-grad':   'linear-gradient(135deg, #0D2545 0%, #1A3A6B 60%, #1A56DB 100%)',
+        'duck-btn':    'linear-gradient(135deg, #1A56DB 0%, #1648C0 100%)',
         'saffron-btn': 'linear-gradient(135deg, #E05D0D 0%, #C54F0A 100%)',
         'dot-grid':    'radial-gradient(circle, #CBD5E1 1px, transparent 1px)',
       },

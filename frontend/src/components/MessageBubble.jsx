@@ -32,18 +32,18 @@ function CitationChip({ citation, index }) {
       whileTap={{ scale: 0.97 }}
       onClick={handleOpen}
       disabled={loading}
-      className="inline-flex items-center gap-1.5 bg-ida-blue-pale border border-blue-100 rounded-lg
-                 px-2.5 py-1.5 text-xs cursor-pointer hover:bg-blue-50 hover:border-ida-blue/30
+      className="inline-flex items-center gap-1.5 bg-duck-blue-pale border border-blue-100 rounded-lg
+                 px-2.5 py-1.5 text-xs cursor-pointer hover:bg-blue-50 hover:border-duck-blue/30
                  hover:shadow-sm transition-all disabled:opacity-60 disabled:cursor-wait"
     >
-      <span className="w-4 h-4 rounded-full bg-ida-blue text-white text-[9px] font-bold flex items-center justify-center flex-shrink-0">
+      <span className="w-4 h-4 rounded-full bg-duck-blue text-white text-[9px] font-bold flex items-center justify-center flex-shrink-0">
         {index + 1}
       </span>
       {loading
-        ? <Loader2 size={11} className="text-ida-blue animate-spin flex-shrink-0" />
-        : <FileText size={11} className="text-ida-blue flex-shrink-0" />
+        ? <Loader2 size={11} className="text-duck-blue animate-spin flex-shrink-0" />
+        : <FileText size={11} className="text-duck-blue flex-shrink-0" />
       }
-      <span className="text-ida-navy font-medium truncate max-w-[120px]">
+      <span className="text-duck-navy font-medium truncate max-w-[120px]">
         {citation.section_heading || `Page ${citation.page_number || '?'}`}
       </span>
       {citation.page_number && (
@@ -80,7 +80,7 @@ export default function MessageBubble({ message }) {
       {/* Avatar */}
       <div className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold mt-0.5 ${
         isUser
-          ? 'bg-ida-grad text-white'
+          ? 'bg-duck-grad text-white'
           : 'bg-white border-2 border-slate-100 shadow-card overflow-hidden'
       }`}>
         {isUser ? (
@@ -100,7 +100,7 @@ export default function MessageBubble({ message }) {
       <div className={`max-w-[72%] ${isUser ? 'items-end' : 'items-start'} flex flex-col gap-2`}>
         <div className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
           isUser
-            ? 'bg-ida-grad text-white rounded-tr-sm'
+            ? 'bg-duck-grad text-white rounded-tr-sm'
             : isError
               ? 'bg-red-50 border border-red-100 text-red-700 rounded-tl-sm'
               : 'bg-white shadow-card border border-slate-100 text-slate-800 rounded-tl-sm'
@@ -123,21 +123,21 @@ export default function MessageBubble({ message }) {
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
-                  h1: ({children}) => <h1 className="text-base font-bold text-ida-navy mt-3 mb-1">{children}</h1>,
-                  h2: ({children}) => <h2 className="text-sm font-bold text-ida-navy mt-3 mb-1">{children}</h2>,
-                  h3: ({children}) => <h3 className="text-sm font-semibold text-ida-navy mt-2 mb-1">{children}</h3>,
+                  h1: ({children}) => <h1 className="text-base font-bold text-duck-navy mt-3 mb-1">{children}</h1>,
+                  h2: ({children}) => <h2 className="text-sm font-bold text-duck-navy mt-3 mb-1">{children}</h2>,
+                  h3: ({children}) => <h3 className="text-sm font-semibold text-duck-navy mt-2 mb-1">{children}</h3>,
                   p:  ({children}) => <p className="my-1 leading-relaxed">{children}</p>,
                   ul: ({children}) => <ul className="list-disc pl-5 space-y-0.5 my-1">{children}</ul>,
                   ol: ({children}) => <ol className="list-decimal pl-5 space-y-0.5 my-1">{children}</ol>,
                   li: ({children}) => <li className="leading-relaxed">{children}</li>,
-                  strong: ({children}) => <strong className="font-semibold text-ida-navy">{children}</strong>,
+                  strong: ({children}) => <strong className="font-semibold text-duck-navy">{children}</strong>,
                   // Inline code vs fenced code block
                   code: ({inline, children}) => inline
-                    ? <code className="bg-blue-50 text-ida-blue px-1.5 py-0.5 rounded text-xs font-mono border border-blue-100">{children}</code>
+                    ? <code className="bg-blue-50 text-duck-blue px-1.5 py-0.5 rounded text-xs font-mono border border-blue-100">{children}</code>
                     : <code className="block rounded-xl p-4 overflow-x-auto text-xs font-mono leading-relaxed my-2 whitespace-pre border-l-4"
                         style={{background:'#EFF6FF', color:'#0D2545', borderLeftColor:'#E05D0D'}}>{children}</code>,
                   pre: ({children}) => <>{children}</>,
-                  // Table with IDA navy header + striped rows
+                  // Table with navy header + striped rows
                   table: ({children}) => (
                     <div className="overflow-x-auto my-3 rounded-xl border border-slate-200 shadow-sm">
                       <table className="w-full text-xs border-collapse">{children}</table>

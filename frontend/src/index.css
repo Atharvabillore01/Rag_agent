@@ -19,9 +19,9 @@
 
 @layer components {
   .btn-primary {
-    @apply bg-ida-btn text-white font-semibold rounded-xl px-5 py-2.5
+    @apply bg-duck-btn text-white font-semibold rounded-xl px-5 py-2.5
            transition-all duration-200 hover:shadow-elevated hover:-translate-y-0.5
-           active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-ida-blue focus:ring-offset-2
+           active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-duck-blue focus:ring-offset-2
            disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none;
     background-image: linear-gradient(135deg, #1A56DB 0%, #1648C0 100%);
   }
@@ -42,7 +42,7 @@
     @apply w-full bg-white border border-slate-200 rounded-xl px-4 py-3
            text-slate-900 placeholder-slate-400 text-sm
            transition-all duration-200
-           focus:outline-none focus:border-ida-blue focus:shadow-input-f;
+           focus:outline-none focus:border-duck-blue focus:shadow-input-f;
   }
 
   .card {
@@ -60,7 +60,7 @@
   }
 
   .nav-item-active {
-    @apply nav-item bg-ida-blue-pale text-ida-blue font-semibold;
+    @apply nav-item bg-duck-blue-pale text-duck-blue font-semibold;
   }
 
   .badge {

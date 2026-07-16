@@ -69,15 +69,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not auth.startswith("Bearer "):
             return None
         try:
-            from jose import jwt
-            # Verify the signature AND expiry. An expired/invalid token must not
-            # be trusted to attribute rate-limit usage to a tenant (it could
-            # poison another tenant's bucket); on failure we fall through to None.
-            payload = jwt.decode(
-                auth[7:],
-                settings.secret_key,
-                algorithms=["HS256"],
-            )
+            # Verify signature, expiry, issuer AND audience (tokens now carry
+            # iss/aud — decoding without them would raise). An expired/invalid
+            # token must not be trusted to attribute rate-limit usage to a tenant
+            # (it could poison another tenant's bucket); on failure -> None.
+            from src.api.auth import decode_token
+            payload = decode_token(auth[7:])
             return payload.get("tenant_id")
         except Exception:
             return None

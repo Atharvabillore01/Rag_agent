@@ -67,13 +67,13 @@ function LivePipeline({ status }) {
             {done ? (
               <CheckCircle2 size={11} className="text-emerald-500 flex-shrink-0" />
             ) : active ? (
-              <Loader2 size={11} className="text-ida-blue animate-spin flex-shrink-0" />
+              <Loader2 size={11} className="text-duck-blue animate-spin flex-shrink-0" />
             ) : failed ? (
               <AlertCircle size={11} className="text-red-400 flex-shrink-0" />
             ) : (
               <div className="w-[11px] h-[11px] rounded-full border border-slate-200 flex-shrink-0" />
             )}
-            <span className={done ? 'text-emerald-600' : active ? 'text-ida-blue font-medium' : 'text-slate-400'}>
+            <span className={done ? 'text-emerald-600' : active ? 'text-duck-blue font-medium' : 'text-slate-400'}>
               {stage.label}{active ? '…' : ''}
             </span>
           </div>
@@ -128,7 +128,7 @@ function DocCard({ doc, onDelete, onComplete }) {
       <div className="flex items-start gap-3">
         <div className={`w-10 h-10 rounded-xl ${fc.bg} flex items-center justify-center flex-shrink-0`}>
           {processing
-            ? <Loader2 size={18} className="text-ida-blue animate-spin-slow" />
+            ? <Loader2 size={18} className="text-duck-blue animate-spin-slow" />
             : <Icon size={18} className={fc.color} />
           }
         </div>
@@ -202,11 +202,11 @@ export default function Documents() {
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 bg-white border-b border-slate-100 flex-shrink-0">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-ida-saffron-lt flex items-center justify-center">
-            <FileText size={18} className="text-ida-saffron" />
+          <div className="w-9 h-9 rounded-xl bg-duck-saffron-lt flex items-center justify-center">
+            <FileText size={18} className="text-duck-saffron" />
           </div>
           <div>
-            <h2 className="font-display font-semibold text-ida-navy text-sm">Document Library</h2>
+            <h2 className="font-display font-semibold text-duck-navy text-sm">Document Library</h2>
             <p className="text-[11px] text-slate-400">
               {loading ? 'Loading…' : `${docs.length} document${docs.length !== 1 ? 's' : ''} · ${ready} ready`}
             </p>
@@ -229,7 +229,7 @@ export default function Documents() {
         {/* Stats bar */}
         <div className="grid grid-cols-3 gap-4 mb-6">
           {[
-            { label: 'Total Documents', value: docs.length, icon: FileText,      color: 'text-ida-blue',    bg: 'bg-ida-blue-pale' },
+            { label: 'Total Documents', value: docs.length, icon: FileText,      color: 'text-duck-blue',    bg: 'bg-duck-blue-pale' },
             { label: 'Ready to Query',  value: ready,       icon: CheckCircle2,  color: 'text-emerald-600', bg: 'bg-emerald-50'    },
             { label: 'Processing',      value: processing,  icon: Clock,         color: 'text-amber-600',   bg: 'bg-amber-50'      },
           ].map(({ label, value, icon: Icon, color, bg }) => (
@@ -256,7 +256,7 @@ export default function Documents() {
             >
               <div className="card p-5">
                 <div className="flex items-center gap-2 mb-4">
-                  <Upload size={15} className="text-ida-saffron" />
+                  <Upload size={15} className="text-duck-saffron" />
                   <h3 className="font-display font-semibold text-sm text-slate-700">Upload Documents</h3>
                 </div>
                 <UploadZone onUploaded={() => { setTimeout(fetchDocs, 1500) }} />
@@ -269,7 +269,7 @@ export default function Documents() {
         {loading && !docs.length ? (
           <div className="flex items-center justify-center py-24">
             <div className="text-center">
-              <div className="w-12 h-12 border-2 border-slate-200 border-t-ida-blue rounded-full animate-spin mx-auto mb-4" />
+              <div className="w-12 h-12 border-2 border-slate-200 border-t-duck-blue rounded-full animate-spin mx-auto mb-4" />
               <p className="text-slate-500 text-sm">Loading documents…</p>
             </div>
           </div>

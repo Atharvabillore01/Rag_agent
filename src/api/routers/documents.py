@@ -5,7 +5,7 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -14,8 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.auth import require_editor, require_viewer
 from src.api.deps import get_object_store_dep, get_vector_store_dep
 from src.config import get_settings
-from src.db.models import Document, DocumentStatus, Tenant, User
+from src.db.models import AuditLog, Document, DocumentStatus, Tenant, User
 from src.db.session import AsyncSessionLocal, get_db
+from src.ingestion.content_scan import content_matches
 from src.ingestion.parsers.router import detect_file_type
 from src.storage.object import ObjectStore, sha256_of_bytes
 from src.storage.vector import VectorStore
@@ -25,6 +26,13 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".webp"}
+
+
+def _req_meta(request: Request) -> dict:
+    """G13: capture caller IP + user-agent for the audit trail."""
+    fwd = request.headers.get("x-forwarded-for")
+    ip = fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "unknown")
+    return {"ip": ip, "user_agent": request.headers.get("user-agent", "")[:200]}
 
 
 class DocumentResponse(BaseModel):
@@ -45,6 +53,7 @@ class DocumentListItem(BaseModel):
 
 @router.post("/upload", response_model=DocumentResponse, status_code=202)
 async def upload_document(
+    request: Request,
     file: UploadFile = File(...),
     current_user: User = Depends(require_editor),
     db: AsyncSession = Depends(get_db),
@@ -73,7 +82,8 @@ async def upload_document(
             detail=f"File exceeds maximum size of {max_size // (1024*1024)} MB",
         )
 
-    # Quota check — enforce per-tenant document limit
+    # Quota check — enforce per-tenant document limit. G8: demo tenants get the
+    # stricter demo cap regardless of the tenant's general quota.
     tenant_row = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
     tenant_obj = tenant_row.scalar_one_or_none()
     if tenant_obj:
@@ -82,10 +92,15 @@ async def upload_document(
             .where(Document.tenant_id == current_user.tenant_id)
         )
         doc_count = count_row.scalar_one()
-        if doc_count >= tenant_obj.quota_documents:
+        doc_limit = (
+            settings.demo_max_documents
+            if current_user.role.value == "demo"
+            else tenant_obj.quota_documents
+        )
+        if doc_count >= doc_limit:
             raise HTTPException(
                 status_code=429,
-                detail=f"Document quota reached ({tenant_obj.quota_documents} documents). "
+                detail=f"Document quota reached ({doc_limit} documents). "
                        "Delete existing documents to upload more.",
             )
 
@@ -109,6 +124,16 @@ async def upload_document(
     mime = file.content_type
     file_type = detect_file_type(filename, mime)
 
+    # G9: reject files whose actual bytes don't match their declared type — a
+    # renamed executable/script must not reach the parser posing as a document.
+    ok, sniffed = content_matches(data, file_type)
+    if not ok:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File content ({sniffed or 'unrecognized'}) does not match a "
+                   f"{file_type.upper()} document. Upload rejected.",
+        )
+
     # Upload to object storage — boto3 is synchronous; run in thread pool so
     # the async event loop is not blocked during the network transfer.
     document_id = str(uuid.uuid4())
@@ -131,6 +156,14 @@ async def upload_document(
         file_size_bytes=len(data),
     )
     db.add(doc)
+    db.add(AuditLog(
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.id,
+        action="document_upload",
+        resource_type="document",
+        resource_id=document_id,
+        log_metadata={"filename": filename, "file_type": file_type, **_req_meta(request)},
+    ))
     await db.commit()
     logger.info(
         "upload queued document",
@@ -334,6 +367,7 @@ async def get_document_view_url(
 @router.delete("/{document_id}", status_code=204)
 async def delete_document(
     document_id: str,
+    request: Request,
     current_user: User = Depends(require_editor),
     db: AsyncSession = Depends(get_db),
     object_store: ObjectStore = Depends(get_object_store_dep),
@@ -356,5 +390,13 @@ async def delete_document(
     await loop.run_in_executor(None, lambda: object_store.delete_prefix(f"raw/{current_user.tenant_id}/{document_id}/"))
     await loop.run_in_executor(None, lambda: object_store.delete_prefix(f"artifacts/{current_user.tenant_id}/{document_id}/"))
     await vector_store.delete_by_document(current_user.tenant_id, document_id)
+    db.add(AuditLog(
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.id,
+        action="document_delete",
+        resource_type="document",
+        resource_id=document_id,
+        log_metadata={"filename": doc.filename, **_req_meta(request)},
+    ))
     await db.delete(doc)
     await db.commit()

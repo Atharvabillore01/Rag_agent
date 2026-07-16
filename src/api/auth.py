@@ -1,5 +1,6 @@
 """JWT-based authentication helpers (§6, §15)."""
 
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException, status
@@ -19,6 +20,23 @@ _settings = get_settings()
 
 ALGORITHM = "HS256"
 
+
+class PasswordPolicyError(ValueError):
+    """Raised when a password fails the policy (G15)."""
+
+
+def validate_password(password: str) -> None:
+    """G15: enforce a minimum length and reject passwords longer than bcrypt's
+    72-byte limit (beyond which bcrypt silently truncates, giving a false sense
+    of strength and inconsistent verification)."""
+    if len(password) < _settings.min_password_length:
+        raise PasswordPolicyError(
+            f"Password must be at least {_settings.min_password_length} characters."
+        )
+    if len(password.encode("utf-8")) > 72:
+        raise PasswordPolicyError("Password must be at most 72 bytes long.")
+
+
 def hash_password(password: str) -> str:
     return _bcrypt.hashpw(password.encode(), _bcrypt.gensalt()).decode()
 
@@ -34,9 +52,43 @@ class TokenData(BaseModel):
 
 
 def create_access_token(data: dict) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=_settings.access_token_expire_minutes)
-    payload = {**data, "exp": expire}
+    now = datetime.now(timezone.utc)
+    payload = {
+        **data,
+        "iat": now,
+        "nbf": now,
+        "exp": now + timedelta(minutes=_settings.access_token_expire_minutes),
+        "iss": _settings.jwt_issuer,
+        "aud": _settings.jwt_audience,
+        "jti": data.get("jti") or str(uuid.uuid4()),
+    }
     return jwt.encode(payload, _settings.secret_key, algorithm=ALGORITHM)
+
+
+def decode_token(token: str) -> dict:
+    """Decode + verify a token, including issuer and audience (and exp/nbf/iat)."""
+    return jwt.decode(
+        token,
+        _settings.secret_key,
+        algorithms=[ALGORITHM],
+        audience=_settings.jwt_audience,
+        issuer=_settings.jwt_issuer,
+    )
+
+
+async def revoke_token(token: str) -> None:
+    """G14: add a token's jti to the denylist until it would expire (logout)."""
+    try:
+        payload = decode_token(token)
+    except JWTError:
+        return  # already invalid/expired — nothing to revoke
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+    if not jti or not exp:
+        return
+    ttl = int(exp - datetime.now(timezone.utc).timestamp())
+    from src.storage.cache import get_cache
+    await get_cache().revoke_jti(jti, ttl)
 
 
 async def get_current_user(
@@ -49,12 +101,19 @@ async def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(credentials.credentials, _settings.secret_key, algorithms=[ALGORITHM])
+        payload = decode_token(credentials.credentials)
         user_id: str = payload.get("sub", "")
+        jti: str = payload.get("jti", "")
         if not user_id:
             raise credentials_exception
     except JWTError:
         raise credentials_exception
+
+    # G14: reject revoked (logged-out) tokens. Fails open on a Redis outage.
+    if jti:
+        from src.storage.cache import get_cache
+        if await get_cache().is_jti_revoked(jti):
+            raise credentials_exception
 
     result = await db.execute(select(User).where(User.id == user_id, User.is_active.is_(True)))
     user = result.scalar_one_or_none()

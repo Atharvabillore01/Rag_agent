@@ -4,14 +4,19 @@ import { motion } from 'framer-motion'
 import { Mail, Lock, Building2, ArrowRight, Eye, EyeOff } from 'lucide-react'
 import { auth as authApi } from '../api'
 import { useAuthStore } from '../stores/authStore'
-import IDALogo from '../components/IDALogo'
-import CityIllustration from '../components/CityIllustration'
+import DuckVaultLogo from '../components/DuckVaultLogo'
+import DuckScene3D from '../components/DuckScene3D'
 
 export default function Register() {
   const [form, setForm]       = useState({ email: '', password: '', tenant_name: '' })
   const [showPw, setShowPw]   = useState(false)
+  const [pwFocus, setPwFocus] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState('')
+
+  // Tell the duck what to do: hide its eyes while a password is being typed
+  // (peek instead if the password is revealed).
+  const duckExpr = pwFocus ? (showPw ? 'peek' : 'cover') : null
   const login    = useAuthStore((s) => s.login)
   const navigate = useNavigate()
 
@@ -35,37 +40,26 @@ export default function Register() {
 
   return (
     <div className="min-h-screen flex">
-      {/* LEFT PANEL */}
-      <div className="hidden lg:flex lg:w-[58%] flex-col bg-ida-grad relative overflow-hidden">
-        <div className="absolute inset-0 opacity-[0.06]"
-          style={{ backgroundImage: 'linear-gradient(white 1px, transparent 1px), linear-gradient(90deg, white 1px, transparent 1px)', backgroundSize: '60px 60px' }} />
-        <div className="relative z-10 px-10 pt-8">
-          <IDALogo size="sm" white />
-        </div>
-        <div className="relative z-10 flex-1 flex flex-col items-center justify-center px-10 py-8">
-          <motion.div animate={{ y: [0, -6, 0] }} transition={{ repeat: Infinity, duration: 4, ease: 'easeInOut' }}
-            className="w-full max-w-md">
-            <CityIllustration className="w-full" />
-          </motion.div>
-          <div className="text-center mt-6 max-w-sm">
-            <h2 className="text-2xl font-display font-bold text-white mb-2">Join IDA Knowledge Platform</h2>
-            <p className="text-white/60 text-sm leading-relaxed">
-              Create your organization account to start leveraging AI-powered document search and analytics.
+      {/* LEFT PANEL — cozy grass field with a roaming duck */}
+      <div className="hidden lg:flex lg:w-[58%] relative overflow-hidden">
+        <DuckScene3D expression={duckExpr} guide />
+
+        {/* content overlaid on the scene (top area, where the sky is darkest) */}
+        <div className="relative z-10 flex flex-col w-full px-10 pt-8 pb-10 pointer-events-none">
+          <DuckVaultLogo size="sm" white />
+          <div className="mt-14 max-w-md"
+            style={{ textShadow: '0 2px 14px rgba(6,24,14,0.45)' }}>
+            <h2 className="text-3xl font-display font-bold text-white mb-2 leading-tight">Join DuckVault</h2>
+            <p className="text-white/75 text-sm leading-relaxed">
+              Create your organization workspace to start turning documents into answers, drafts, and insights.
             </p>
-          </div>
-        </div>
-        <div className="relative z-10 px-10 pb-8 border-t border-white/10 pt-5">
-          <div className="flex gap-6">
-            {[
-              ['Secure', 'JWT authenticated'],
-              ['Multi-tenant', 'Organization scoped'],
-              ['RBAC', 'Role-based access'],
-            ].map(([t, s]) => (
-              <div key={t}>
-                <p className="text-white text-xs font-semibold">{t}</p>
-                <p className="text-white/40 text-[10px]">{s}</p>
-              </div>
-            ))}
+            <p className="text-white/55 text-xs mt-3">
+              {duckExpr === 'cover'
+                ? "…the duck's covering its eyes so it can't see your password. 🙈"
+                : duckExpr === 'peek'
+                ? '…okay, it peeked. 👀'
+                : 'Move your mouse — the duck will waddle over. 🦆'}
+            </p>
           </div>
         </div>
       </div>
@@ -77,10 +71,10 @@ export default function Register() {
           animate={{ opacity: 1, x: 0 }}
           className="w-full max-w-sm"
         >
-          <div className="lg:hidden mb-8"><IDALogo size="sm" /></div>
+          <div className="lg:hidden mb-8"><DuckVaultLogo size="sm" /></div>
 
-          <h1 className="text-2xl font-display font-bold text-ida-navy mb-1">Create account</h1>
-          <p className="text-slate-500 text-sm mb-8">Set up your IDA organization workspace</p>
+          <h1 className="text-2xl font-display font-bold text-duck-navy mb-1">Create account</h1>
+          <p className="text-slate-500 text-sm mb-8">Set up your DuckVault organization workspace</p>
 
           {error && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
@@ -96,7 +90,7 @@ export default function Register() {
               <div className="relative">
                 <Building2 size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input type="text" className="input-field pl-10"
-                  placeholder="e.g. IDA Indore - Zone A"
+                  placeholder="e.g. Acme Legal LLP"
                   value={form.tenant_name} onChange={set('tenant_name')} required />
               </div>
             </div>
@@ -106,7 +100,7 @@ export default function Register() {
               <div className="relative">
                 <Mail size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input type="email" className="input-field pl-10"
-                  placeholder="admin@idaindore.org"
+                  placeholder="admin@company.com"
                   value={form.email} onChange={set('email')} required />
               </div>
             </div>
@@ -117,7 +111,8 @@ export default function Register() {
                 <Lock size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input type={showPw ? 'text' : 'password'} className="input-field pl-10 pr-10"
                   placeholder="Minimum 6 characters"
-                  value={form.password} onChange={set('password')} required />
+                  value={form.password} onChange={set('password')} required
+                  onFocus={() => setPwFocus(true)} onBlur={() => setPwFocus(false)} />
                 <button type="button" tabIndex={-1}
                   onClick={() => setShowPw((v) => !v)}
                   className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
@@ -139,7 +134,7 @@ export default function Register() {
           <div className="mt-6 pt-6 border-t border-slate-100 text-center">
             <p className="text-sm text-slate-500">
               Already have an account?{' '}
-              <Link to="/login" className="text-ida-blue font-semibold hover:underline">Sign in</Link>
+              <Link to="/login" className="text-duck-blue font-semibold hover:underline">Sign in</Link>
             </p>
           </div>
         </motion.div>

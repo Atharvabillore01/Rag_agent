@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.middleware import RateLimitMiddleware, RequestIDMiddleware, TimingMiddleware
-from src.api.routers import admin, auth_router, documents, query
+from src.api.routers import admin, auth_router, documents, drafting, lod, query, redline, review, translation
 from src.config import get_settings
 from src.logging_config import configure_logging
 
@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    description="Multi-tenant Agentic RAG Platform — local-first, provider-agnostic",
+    description="DuckVault — multi-tenant agentic RAG for professional document intelligence (local-first, provider-agnostic)",
     version="1.0.0",
     lifespan=lifespan,
     docs_url="/docs" if settings.debug else None,
@@ -60,6 +60,11 @@ app.include_router(auth_router.router)
 app.include_router(documents.router)
 app.include_router(query.router)
 app.include_router(admin.router)
+app.include_router(review.router)
+app.include_router(redline.router)
+app.include_router(translation.router)
+app.include_router(lod.router)
+app.include_router(drafting.router)
 
 
 @app.get("/health")

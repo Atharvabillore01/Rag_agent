@@ -17,9 +17,12 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+from src.db.crypto import EncryptedText  # G11: at-rest encryption for content columns
 
 
 # ── Base ─────────────────────────────────────────────────────────────────────
@@ -108,6 +111,15 @@ class Tenant(Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    # Vertical domain pack this tenant runs — drives prompts, skills library,
+    # citation sources, and extraction schemas (multi-domain plan §3). Kept a
+    # plain string (not an Enum) on purpose: onboarding a new vertical should be
+    # a config change, not a schema migration. "generic" is the domain-agnostic
+    # default that behaves exactly like the platform did before domain packs.
+    domain: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="generic", server_default="generic"
+    )
+
     # Per-tenant provider overrides (§2.3)
     llm_provider_override: Mapped[str | None] = mapped_column(String(50))
     llm_model_override: Mapped[str | None] = mapped_column(String(100))
@@ -147,6 +159,11 @@ class User(Base):
     )
     email: Mapped[str] = mapped_column(String(320), nullable=False)
     hashed_password: Mapped[str | None] = mapped_column(String(255))  # null if SSO-only
+    # MFA (G10): TOTP secret encrypted at rest; enabled only after a code is verified.
+    mfa_secret: Mapped[str | None] = mapped_column(EncryptedText)
+    mfa_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), nullable=False, default=UserRole.viewer)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     collection_tags: Mapped[list | None] = mapped_column(JSON)  # accessible collections
@@ -256,7 +273,7 @@ class Chunk(Base):
     tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
 
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    text: Mapped[str] = mapped_column(Text, nullable=False)
+    text: Mapped[str] = mapped_column(EncryptedText, nullable=False)  # G11: encrypted at rest
     token_count: Mapped[int] = mapped_column(Integer, nullable=False)
 
     # Hierarchical retrieval (§3.3)
@@ -383,3 +400,200 @@ class TenantVectorIndex(Base):
     cutover_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     tenant: Mapped[Tenant] = relationship("Tenant", back_populates="vector_indexes")
+
+
+# ── Parallel Review (feature-implementation-plan §3) ──────────────────────────
+
+class ParallelReview(Base):
+    """A saved "N documents × M questions → answers table" run.
+
+    Structured extraction across a fixed, user-selected set of documents,
+    answered ONLY from those documents (no external retrieval). Questions and
+    per-document answers are stored as JSON so a review is fully re-viewable and
+    columns can be appended without a schema change.
+    """
+
+    __tablename__ = "parallel_reviews"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # Documents included in this review (list of document ids).
+    document_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    # Columns: list of {key, header, question}.
+    questions: Mapped[list] = mapped_column(JSON, nullable=False)
+    # Answers: {doc_id: {filename, answers: {key: answer}, truncated: bool, error: str|null}}.
+    # Null until the run completes.
+    results: Mapped[dict | None] = mapped_column(JSON)
+
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_parallel_reviews_tenant_id", "tenant_id"),
+        Index("ix_parallel_reviews_tenant_created", "tenant_id", "created_at"),
+    )
+
+
+# ── Redline / document diff (feature-implementation-plan §8) ──────────────────
+
+class Redline(Base):
+    """A saved Change -> Consequence comparison of two documents.
+
+    The factual diff is computed deterministically (difflib); the LLM only
+    explains each change's consequence. Results are stored as JSON so the
+    comparison is fully re-viewable.
+    """
+
+    __tablename__ = "redlines"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    base_document_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revised_document_id: Mapped[str] = mapped_column(String(36), nullable=False)
+
+    # list of {change_type, before, after, change, consequence}
+    results: Mapped[list | None] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_redlines_tenant_id", "tenant_id"),
+        Index("ix_redlines_tenant_created", "tenant_id", "created_at"),
+    )
+
+
+# ── Translation (feature-implementation-plan §9) ──────────────────────────────
+
+class Translation(Base):
+    """A saved translation of a document into a target language."""
+
+    __tablename__ = "translations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    document_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    filename: Mapped[str | None] = mapped_column(String(512))
+    target_language: Mapped[str] = mapped_column(String(80), nullable=False)
+
+    result: Mapped[str | None] = mapped_column(EncryptedText)   # translated text (G11: encrypted at rest)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_translations_tenant_id", "tenant_id"),
+        Index("ix_translations_tenant_created", "tenant_id", "created_at"),
+    )
+
+
+# ── List of Dates / chronology (feature-implementation-plan §11) ──────────────
+
+class ListOfDates(Base):
+    """A saved chronological List of Dates built from one or more documents.
+
+    Dates are found deterministically in the source text; the LLM only
+    summarizes each event and normalizes the date. Entries are stored as JSON.
+    """
+
+    __tablename__ = "list_of_dates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    document_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    # list of {date, iso_date, event, document_id, filename, page_number, snippet}
+    results: Mapped[list | None] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_list_of_dates_tenant_id", "tenant_id"),
+        Index("ix_list_of_dates_tenant_created", "tenant_id", "created_at"),
+    )
+
+
+# ── Drafting assistant (feature-implementation-plan §13) ──────────────────────
+
+class Draft(Base):
+    """A generated document draft, grounded in and cited to source documents."""
+
+    __tablename__ = "drafts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    instruction: Mapped[str] = mapped_column(Text, nullable=False)
+    document_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+
+    content: Mapped[str | None] = mapped_column(EncryptedText)   # markdown draft (G11: encrypted at rest)
+    # list of {number, document_id, filename}
+    citations: Mapped[list | None] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_drafts_tenant_id", "tenant_id"),
+        Index("ix_drafts_tenant_created", "tenant_id", "created_at"),
+    )
