@@ -692,6 +692,87 @@ class SensitiveScan(Base):
     )
 
 
+# ── Cross-Examination generator (feature-implementation-plan §29) ─────────────
+
+class CrossExam(Base):
+    """A saved cross-examination plan generated from source documents.
+
+    Questions grouped by theme, each with objective/basis/type. Stored as JSON
+    (analytical structure, re-viewable), like Parallel Review / Contentions.
+    """
+
+    __tablename__ = "cross_exams"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    document_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    instruction: Mapped[str | None] = mapped_column(Text)  # optional case theory
+    # list of {topic, questions: [{question, objective, basis, type}]}
+    results: Mapped[list | None] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_cross_exams_tenant_id", "tenant_id"),
+        Index("ix_cross_exams_tenant_created", "tenant_id", "created_at"),
+    )
+
+
+# ── Contract Playbook Review (feature-implementation-plan §30) ────────────────
+
+class PlaybookReview(Base):
+    """A saved contract-vs-playbook clause deviation review.
+
+    Per clause type: status (meets/deviates/missing) + risk + the contract's
+    position + a recommendation. Stored as JSON (analytical structure).
+    """
+
+    __tablename__ = "playbook_reviews"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    document_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    # the effective playbook used: list of {clause_type, standard}
+    playbook: Mapped[list | None] = mapped_column(JSON)
+    # list of {clause_type, standard, status, risk, document_position, recommendation}
+    results: Mapped[list | None] = mapped_column(JSON)
+    # {by_status: {...}, by_risk: {...}}
+    summary: Mapped[dict | None] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_playbook_reviews_tenant_id", "tenant_id"),
+        Index("ix_playbook_reviews_tenant_created", "tenant_id", "created_at"),
+    )
+
+
 # ── Folders / matters (feature-implementation-plan §23) ───────────────────────
 
 class Folder(Base):

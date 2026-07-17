@@ -11,6 +11,19 @@ function headers(extra = {}) {
   return h
 }
 
+// FastAPI returns `detail` as a string for HTTPException but as an array of
+// {loc,msg,type} objects for 422 validation errors. Render both as readable text
+// (a raw array would stringify to "[object Object]").
+function formatDetail(detail, fallback) {
+  if (!detail) return fallback
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    const msgs = detail.map(d => (d && d.msg) ? d.msg : String(d)).filter(Boolean)
+    return msgs.length ? msgs.join('; ') : fallback
+  }
+  return fallback
+}
+
 async function request(method, path, body) {
   const res = await fetch(`${BASE}${path}`, {
     method,
@@ -19,7 +32,7 @@ async function request(method, path, body) {
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || 'Request failed')
+    throw new Error(formatDetail(err.detail, 'Request failed'))
   }
   if (res.status === 204) return null
   return res.json()
@@ -160,6 +173,21 @@ export const contentions = {
   get:    (id)    => request('GET',    `/contentions/${id}`),
   create: (data)  => request('POST',   '/contentions/', data),
   delete: (id)    => request('DELETE', `/contentions/${id}`),
+}
+
+export const playbook = {
+  list:    ()      => request('GET',    '/playbook/'),
+  get:     (id)    => request('GET',    `/playbook/${id}`),
+  create:  (data)  => request('POST',   '/playbook/', data),
+  delete:  (id)    => request('DELETE', `/playbook/${id}`),
+  default: ()      => request('GET',    '/playbook/default'),
+}
+
+export const crossExam = {
+  list:   ()      => request('GET',    '/cross-exam/'),
+  get:    (id)    => request('GET',    `/cross-exam/${id}`),
+  create: (data)  => request('POST',   '/cross-exam/', data),
+  delete: (id)    => request('DELETE', `/cross-exam/${id}`),
 }
 
 export const pii = {

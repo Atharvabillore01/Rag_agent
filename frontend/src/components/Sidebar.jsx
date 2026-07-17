@@ -2,7 +2,7 @@ import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   FileText, Settings, LogOut, ChevronRight,
-  Plus, Trash2, MessagesSquare, X, Activity, Table2, GitCompareArrows, Languages, CalendarClock, PenLine, Scale, ShieldAlert,
+  Plus, Trash2, MessagesSquare, X, Activity, Table2, GitCompareArrows, Languages, CalendarClock, PenLine, Scale, ShieldAlert, Gavel, ClipboardCheck,
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import { useChatStore } from '../stores/chatStore'
@@ -16,6 +16,8 @@ const NAV = [
   { to: '/translation', icon: Languages,      label: 'Translation',     sub: 'Translate a document' },
   { to: '/lod',         icon: CalendarClock,  label: 'List of Dates',   sub: 'Build a chronology' },
   { to: '/contentions', icon: Scale,          label: 'Contentions',     sub: 'Compare pleadings' },
+  { to: '/cross-exam',  icon: Gavel,          label: 'Cross-Exam',      sub: 'Question a witness' },
+  { to: '/playbook',    icon: ClipboardCheck, label: 'Playbook',        sub: 'Contract clause review' },
   { to: '/sensitive',   icon: ShieldAlert,    label: 'Redact PII',      sub: 'Find & redact sensitive data' },
   { to: '/drafting',    icon: PenLine,        label: 'Drafting',        sub: 'Draft from documents' },
 ]

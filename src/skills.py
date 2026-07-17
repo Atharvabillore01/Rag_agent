@@ -18,7 +18,7 @@ from src.domains import DEFAULT_DOMAIN, normalize_domain
 
 # Features a skill can pre-fill. Kept as a set so the audit (and any future
 # validation) can reject a skill that points at a feature we don't ship.
-FEATURES = {"parallel_review", "drafting", "lod", "redline", "translation", "contentions", "pii"}
+FEATURES = {"parallel_review", "drafting", "lod", "redline", "translation", "contentions", "pii", "cross_exam", "playbook"}
 
 
 def _review(*pairs: tuple[str, str]) -> dict:
@@ -139,6 +139,22 @@ SKILLS: list[dict] = [
         "name": "Compare Contentions",
         "description": "Derive the disputed issues across pleadings and compare each party's stance (admits / denies) side by side.",
         "feature": "contentions",
+        "preset": {},
+    },
+    {
+        "id": "cross-examination",
+        "domain": "legal",
+        "name": "Cross-Examination Questions",
+        "description": "Generate themed cross-examination questions from a witness statement, with objective, source basis and type.",
+        "feature": "cross_exam",
+        "preset": {},
+    },
+    {
+        "id": "contract-playbook",
+        "domain": "legal",
+        "name": "Contract Playbook Review",
+        "description": "Check a contract against standard positions and flag clause deviations with a risk rating.",
+        "feature": "playbook",
         "preset": {},
     },
 

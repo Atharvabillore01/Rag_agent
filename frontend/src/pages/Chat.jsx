@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Send, MessageSquare, Sparkles, FileSearch, FileText, ListChecks, Mic, Square, Table2, PenLine, CalendarClock, GitCompare, Languages, Wand, Scale, ShieldAlert } from 'lucide-react'
+import { Send, MessageSquare, Sparkles, FileSearch, FileText, ListChecks, Mic, Square, Table2, PenLine, CalendarClock, GitCompare, Languages, Wand, Scale, ShieldAlert, Gavel, ClipboardCheck } from 'lucide-react'
 import { streamQuery, transcribeAudio, skills as skillsApi } from '../api'
 import { useChatStore } from '../stores/chatStore'
 import { useAuthStore } from '../stores/authStore'
@@ -24,6 +24,8 @@ const FEATURE_META = {
   translation:     { route: '/translation', icon: Languages,     label: 'Translate' },
   contentions:     { route: '/contentions', icon: Scale,         label: 'Contentions' },
   pii:             { route: '/sensitive',   icon: ShieldAlert,   label: 'Redact' },
+  cross_exam:      { route: '/cross-exam',  icon: Gavel,         label: 'Cross-Exam' },
+  playbook:        { route: '/playbook',    icon: ClipboardCheck, label: 'Playbook' },
 }
 
 // Domain-scoped skill templates. Clicking routes to the feature with the skill's

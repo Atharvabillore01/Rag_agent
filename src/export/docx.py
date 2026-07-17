@@ -109,6 +109,52 @@ def translation_to_docx(filename: str | None, target_language: str | None, resul
     return _save(d)
 
 
+_STATUS_LABEL = {"meets": "Meets", "deviates": "Deviates", "missing": "Missing"}
+
+
+def playbook_to_docx(name: str, results: list | None) -> bytes:
+    """Contract playbook review: a Clause / Status / Risk / Position / Recommendation table."""
+    d = _doc(name or "Contract Playbook Review")
+    rows = []
+    for r in (results or []):
+        rows.append([
+            r.get("clause_type", ""),
+            _STATUS_LABEL.get(r.get("status"), r.get("status", "")),
+            (r.get("risk") or "").title(),
+            r.get("document_position", ""),
+            r.get("recommendation", ""),
+        ])
+    _table(d, ["Clause", "Status", "Risk", "Contract position", "Recommendation"], rows)
+    return _save(d)
+
+
+def cross_exam_to_docx(name: str, topics: list | None) -> bytes:
+    """Cross-examination plan: themed groups of questions with objective/basis/type."""
+    d = _doc(name or "Cross-Examination Plan")
+    topics = topics or []
+    if not topics:
+        d.add_paragraph("No questions were generated.")
+        return _save(d)
+    for t in topics:
+        d.add_heading(str(t.get("topic") or "Topic"), level=2)
+        for i, q in enumerate(t.get("questions") or [], start=1):
+            p = d.add_paragraph(f"{i}. {q.get('question', '')}")
+            if p.runs:
+                p.runs[0].bold = True
+            meta = []
+            if q.get("type"):
+                meta.append(f"[{q['type']}]")
+            if q.get("objective"):
+                meta.append(f"Objective: {q['objective']}")
+            if q.get("basis"):
+                meta.append(f"Basis: {q['basis']}")
+            if meta:
+                sub = d.add_paragraph("   " + "  ·  ".join(meta))
+                if sub.runs:
+                    sub.runs[0].italic = True
+    return _save(d)
+
+
 def redaction_to_docx(name: str, sections: list, unavailable: int = 0) -> bytes:
     """Redacted document export (§28). ``sections`` is a list of
     ``{filename, redacted_text, count}`` — one per source document. ``unavailable``

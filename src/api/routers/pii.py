@@ -20,7 +20,8 @@ from src.db.models import SensitiveScan, User
 from src.db.session import get_db
 from src.export.docx import DOCX_MEDIA, docx_filename, redaction_to_docx
 from src.pii.engine import MAX_DOCS, redact_text, run_scan
-from src.providers.factory import LLMTask, get_tenant_task_llm
+from src.api.deps import resolve_task_llm
+from src.providers.factory import LLMTask
 from src.review.loader import load_document_chunks, load_document_texts
 
 router = APIRouter(prefix="/pii", tags=["pii"])
@@ -95,7 +96,7 @@ async def create_scan(
     if not chunks:
         raise HTTPException(400, detail="No readable document text to scan.")
 
-    llm = get_tenant_task_llm(LLMTask.EXTRACT, None, None) if body.use_llm else None
+    llm = await resolve_task_llm(db, current_user.tenant_id, LLMTask.EXTRACT) if body.use_llm else None
     scanned = await run_scan(chunks, llm=llm)
 
     default_name = "Sensitive scan: " + ", ".join(

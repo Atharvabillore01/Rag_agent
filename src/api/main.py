@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.middleware import RateLimitMiddleware, RequestIDMiddleware, TimingMiddleware
-from src.api.routers import admin, auth_router, contentions, documents, drafting, folders, lod, pii, query, redline, review, skills, transcribe, translation
+from src.api.routers import admin, auth_router, contentions, crossexam, documents, drafting, folders, lod, pii, playbook, query, redline, review, skills, transcribe, translation
 from src.config import get_settings
 from src.logging_config import configure_logging
 
@@ -70,6 +70,8 @@ app.include_router(transcribe.router)
 app.include_router(skills.router)
 app.include_router(contentions.router)
 app.include_router(pii.router)
+app.include_router(crossexam.router)
+app.include_router(playbook.router)
 
 
 @app.get("/health")

@@ -29,13 +29,40 @@ _SYSTEM = (
     "Return a JSON object mapping each question key to its answer string."
 )
 
-# Backoff schedule (seconds) before retry attempts 2 and 3. A review fans out
-# many concurrent LLM calls, so a transient rate-limit / timeout on one document
-# is expected under load — retry it rather than surfacing a spurious "Error" cell.
-_RETRY_BACKOFF = (0.6, 1.8)
+# Backoff schedule (seconds) before retry attempts. A review fans out many
+# concurrent LLM calls, so a transient rate-limit / timeout on one document is
+# expected under load — retry it rather than surfacing a spurious "Error" cell.
+# Four attempts (vs. three) gives strict-JSON generation an extra stochastic try
+# before the non-strict fallback kicks in.
+_RETRY_BACKOFF = (0.6, 1.2, 2.4)
 _TRANSIENT_MARKERS = (
     "rate limit", "rate_limit", "429", "timeout", "timed out", "temporarily",
     "overloaded", "unavailable", "503", "502", "500", "connection", "reset",
+)
+
+
+# Markers of a JSON-mode generation failure: some providers (e.g. Groq) return a
+# 400 when the model emits invalid JSON under strict json_mode. This is worth
+# retrying WITHOUT strict mode, letting the tolerant _extract_json salvage the
+# output instead of 500-ing the request.
+_JSON_FAIL_MARKERS = ("json_validate_failed", "failed to generate json", "json_validate")
+
+
+def _is_json_gen_failure(exc: Exception) -> bool:
+    return any(m in str(exc).lower() for m in _JSON_FAIL_MARKERS)
+
+
+# Appended when json_mode is requested. Dense legal prose makes some models emit
+# invalid JSON under strict mode (unquoted multi-line string values), which Groq
+# rejects with a 400. This directive markedly raises first-attempt validity.
+_JSON_HYGIENE = Message(
+    role="system",
+    content=(
+        "Output MUST be exactly one valid JSON value and nothing else — no prose, no "
+        "code fences, no comments, no trailing commas. Every string value must be on a "
+        "single line, wrapped in double quotes, with any internal quotes or newlines "
+        "escaped. Keep string values concise."
+    ),
 )
 
 
@@ -48,16 +75,29 @@ def _is_transient(exc: Exception) -> bool:
 
 
 async def _complete_with_retry(llm, messages, *, max_tokens, temperature, json_mode):
-    """llm.complete with bounded retry on transient errors (non-transient re-raise immediately)."""
+    """llm.complete with bounded retry on transient errors (non-transient re-raise immediately).
+
+    A strict-JSON generation failure is retried with ``json_mode=False`` so the
+    model gets another chance and the caller's tolerant JSON parser can recover
+    the output, rather than surfacing a hard 400 to the user."""
+    # Reinforce strict JSON formatting when the caller wants JSON.
+    call_messages = messages + [_JSON_HYGIENE] if json_mode else messages
     attempts = len(_RETRY_BACKOFF) + 1
+    mode = json_mode
     for attempt in range(attempts):
         try:
             return await llm.complete(
-                messages, max_tokens=max_tokens, temperature=temperature, json_mode=json_mode
+                call_messages, max_tokens=max_tokens, temperature=temperature, json_mode=mode
             )
         except Exception as exc:  # noqa: BLE001
-            if attempt == attempts - 1 or not _is_transient(exc):
+            json_fail = _is_json_gen_failure(exc)
+            if attempt == attempts - 1 or not (_is_transient(exc) or json_fail):
                 raise
+            # On a JSON-generation failure, retry in strict mode first (the model is
+            # stochastic — a fresh attempt usually yields valid JSON). Only on the
+            # LAST retry drop strict mode so the tolerant parser can salvage output.
+            if json_fail and mode and attempt >= attempts - 2:
+                mode = False
             await asyncio.sleep(_RETRY_BACKOFF[attempt])
 
 

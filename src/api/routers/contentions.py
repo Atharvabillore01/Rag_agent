@@ -20,7 +20,8 @@ from src.contentions.engine import MAX_DOCS, run_contentions
 from src.db.models import ContentionAnalysis, User
 from src.db.session import get_db
 from src.export.docx import DOCX_MEDIA, contentions_to_docx, docx_filename
-from src.providers.factory import LLMTask, get_tenant_task_llm
+from src.api.deps import resolve_task_llm
+from src.providers.factory import LLMTask
 from src.review.loader import load_document_texts
 
 router = APIRouter(prefix="/contentions", tags=["contentions"])
@@ -106,7 +107,7 @@ async def create_contentions(
     if len(docs) < 2:
         raise HTTPException(400, detail="At least two ready documents are required.")
 
-    llm = get_tenant_task_llm(LLMTask.EXTRACT, None, None)
+    llm = await resolve_task_llm(db, current_user.tenant_id, LLMTask.EXTRACT)
     result = await run_contentions(llm, docs)
 
     default_name = "Contentions: " + " vs ".join(f for _, f, _ in docs[:3])

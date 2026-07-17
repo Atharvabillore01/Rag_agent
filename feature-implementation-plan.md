@@ -812,5 +812,81 @@ Scan selected documents for sensitive identifiers and produce (a) a findings rep
 
 ---
 
+## 29. FEATURE — Cross-Examination Question Generator
+
+### 29.1 What
+From a witness statement, affidavit, deposition, or plaint, generate cross-examination questions grouped by theme. Unlike the extract-to-table features, the output is an *examination plan*: each question carries its objective, the source basis it targets (paragraph/quote), and a type (foundation / contradiction / impeachment / admission). Optional free-text "case theory" steers the questions. Legal-domain skill; verifiable on Groq.
+
+### 29.2 Design
+- Engine `src/crossexam/engine.py::generate_cross_exam(llm, docs, instruction)`: one bounded JSON-mode LLM call over the (labelled, truncated) source text → `{topics: [{topic, questions: [{question, objective, basis, type}]}]}`. Reuses the review engine's `_complete_with_retry` / `_extract_json`. Question `type` coerced to a fixed vocabulary; topics/questions capped.
+- Grounding: uses ONLY the selected, tenant-owned, ready documents (`load_document_texts`) — no external retrieval, no cross-tenant leakage.
+- Storage `CrossExam`: `results` (JSON topics) + `instruction`; results are analytical structure, stored as JSON like Review/Contentions.
+
+### 29.3 Components
+- Engine `src/crossexam/engine.py`, model `CrossExam` (table `cross_exams`) + migration `0011`.
+- Router `src/api/routers/crossexam.py` (create=editor, read/export=viewer, delete=editor) + `cross_exam_to_docx`.
+- Skill `cross-examination` (legal) → feature `cross_exam`; `FEATURES`/`FEATURE_META`/sidebar/route + `/cross-exam` metered for QPM.
+- Frontend `CrossExam.jsx` (topics with grouped, typed questions + export).
+
+### 29.4 Acceptance criteria
+- Create requires ≥1 tenant-owned, ready document; cross-tenant/missing rejected; >MAX_DOCS rejected at parse.
+- Real Groq over a sample witness statement yields ≥1 topic and questions; every question has question/objective/basis and a `type` in the fixed vocabulary.
+- Instruction (case theory) is honored (passed to the model).
+- IDOR on get/export/delete rejected; docx export valid.
+- Adversarial review: no confirmed correctness/security/isolation finding survives.
+
+### 29.5 Status
+- [x] engine — `src/crossexam/engine.py` (themed typed questions; bounded; tolerant parsing)
+- [x] model + migration — `CrossExam` + `0011` (applied, table verified)
+- [x] router + export + register — `src/api/routers/crossexam.py` + `cross_exam_to_docx`; `/cross-exam` metered; tenant LLM override honored
+- [x] skill + wiring — legal `cross-examination`; `FEATURES`/`FEATURE_META`/sidebar/route
+- [x] frontend — `CrossExam.jsx` (case-theory + typed questions + export), static-audited
+- [x] live audit → **RESULT 38/38** (parser robustness on 6 malformed shapes; real-Groq generation; lifecycle; validation; IDOR)
+- [ ] adversarial review — launched (task wgrni4q55) but **stalled/incomplete** after ~45 min; re-run pending. Feature is audited green and shares the review fixes applied to its siblings.
+
+---
+
+## 30. FEATURE — Contract Playbook Review (clause deviation)
+
+### 30.1 What
+Review a contract against a **playbook** of standard positions and flag, per clause type, whether the contract *meets*, *deviates*, or is *missing* the standard — with a risk rating and a recommendation. Serves transactional/CA work (the counterpart to the litigation suite). Ships a built-in default playbook (Limitation of Liability, Indemnity, Termination, Confidentiality, Governing Law, Payment, Force Majeure, Dispute Resolution, Assignment, IP); callers may override/extend it.
+
+### 30.2 Design
+- Engine `src/playbook/engine.py::run_playbook_review(llm, docs, playbook)`: one bounded JSON-mode LLM call over the (labelled, truncated) contract text with the full playbook → an assessment per clause type `{clause_type, standard, status, risk, document_position, recommendation}`. Reuses review-engine `_complete_with_retry`/`_extract_json`. `status` ∈ {meets, deviates, missing}; `risk` ∈ {none, low, medium, high} — both coerced. Every playbook clause type always gets a row (rectangular).
+- Grounding: uses ONLY selected, tenant-owned, ready documents (`load_document_texts`).
+- `DEFAULT_PLAYBOOK` is a plain data list (config, not code) — extend by editing one file; custom entries merge over defaults by `clause_type`.
+- Storage `PlaybookReview`: `playbook` (effective playbook used), `results` (assessments), `summary` (counts by status/risk) — JSON.
+
+### 30.3 Components
+- Engine `src/playbook/engine.py`, model `PlaybookReview` (table `playbook_reviews`) + migration `0012`.
+- Router `src/api/routers/playbook.py` (create=editor, read/export=viewer, delete=editor) + `playbook_to_docx`.
+- Skill `contract-playbook` (legal) → feature `playbook`; wiring + `/playbook` metered.
+- Frontend `PlaybookReview.jsx` (assessments with status/risk chips + export).
+
+### 30.4 Acceptance criteria
+- Every playbook clause type yields exactly one assessment with a `status` and `risk` in the fixed vocabularies (rectangular), even on malformed LLM output (no crash).
+- Custom playbook entries merge over/extend defaults; the effective playbook is stored.
+- Real Groq on a contract with a weak liability clause flags it as deviates/high (directional check).
+- Cross-tenant/missing docs rejected; >MAX_DOCS rejected at parse; IDOR on get/export/delete rejected; docx export valid.
+- Adversarial review: no confirmed correctness/security/isolation finding survives.
+
+### 30.5 Status
+- [x] engine — `src/playbook/engine.py` (DEFAULT_PLAYBOOK, merge, coercion, rectangular results)
+- [x] model + migration — `PlaybookReview` + `0012` (applied, table verified)
+- [x] router + export + register — `src/api/routers/playbook.py` (+ `GET /default`) + `playbook_to_docx`
+- [x] skill + wiring — legal `contract-playbook`; `FEATURES`/`FEATURE_META`/sidebar/route + `/playbook` metered
+- [x] frontend — `PlaybookReview.jsx` (clause × status/risk table + export), static-audited
+- [x] live audit → **RESULT 34/34 → 38/38** after review fixes (merge/coercion; rectangular on malformed LLM; real Groq flags 7 missing clauses; lifecycle; custom-playbook merge; isolation/IDOR; docx table)
+- [x] adversarial review (12 agents) — **8 raised, 7 confirmed, all fixed**:
+  - risk default was presence-aware → now **status-aware** (a matched `deviates`/`missing` row with no risk → `medium`, not hidden as `none`)
+  - `merge_playbook` matched on exact string → now **slug-keyed** (a case/whitespace variant overrides the default instead of duplicating + colliding)
+  - a bare top-level JSON array response is now parsed (`_extract_list`) instead of silently all-missing
+  - **tenant LLM provider/model override** now honored (new `resolve_task_llm` in deps; also applied to contentions/cross-exam/pii — confidential text routes to the tenant's provider)
+  - per-item `document_ids` length bound; `list` no longer over-fetches the large JSON blobs; frontend renders 422 detail readably (shared `formatDetail`, was `[object Object]`)
+
+**Shared robustness fix (all JSON features):** `_complete_with_retry` now appends a strict-JSON hygiene directive when `json_mode` is on, retries a Groq `json_validate_failed` 400 (strict retries then a non-strict fallback), and gets a 4th attempt. Fixes intermittent hard-400 crashes on dense legal text; contentions audit verified 43/43 across repeated runs.
+
+---
+
 ## 6. Features 5–7 — specs to be expanded when reached
 Each remaining feature gets a §-section like Feature 1 (components / acceptance / audit) at the moment we start it, so specs stay honest to the code that exists then rather than guessed up front.

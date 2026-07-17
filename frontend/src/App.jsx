@@ -11,6 +11,8 @@ import Translation   from './pages/Translation'
 import ListOfDates   from './pages/ListOfDates'
 import Contentions   from './pages/Contentions'
 import SensitiveScan from './pages/SensitiveScan'
+import CrossExam     from './pages/CrossExam'
+import PlaybookReview from './pages/PlaybookReview'
 import Drafting      from './pages/Drafting'
 import Admin         from './pages/Admin'
 import Observability from './pages/Observability'
@@ -32,6 +34,8 @@ export default function App() {
             <Route path="/lod"           element={<ListOfDates />} />
             <Route path="/contentions"   element={<Contentions />} />
             <Route path="/sensitive"     element={<SensitiveScan />} />
+            <Route path="/cross-exam"    element={<CrossExam />} />
+            <Route path="/playbook"      element={<PlaybookReview />} />
             <Route path="/drafting"      element={<Drafting />} />
             <Route path="/admin"         element={<Admin />} />
             <Route path="/observability" element={<Observability />} />

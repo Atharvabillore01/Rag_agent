@@ -31,6 +31,7 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 # cheap and NOT metered. Uploads are metered separately (per-hour ingestion).
 _METERED_POST_PREFIXES = (
     "/query", "/review", "/redline", "/translation", "/lod", "/drafting", "/contentions", "/pii",
+    "/cross-exam", "/playbook",
 )
 _UPLOAD_PREFIX = "/documents/upload"
 
