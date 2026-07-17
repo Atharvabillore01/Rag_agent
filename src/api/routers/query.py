@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from src.agent.loop import AgentContext, run_agent_loop
 from src.api.auth import require_viewer
 from src.api.deps import get_cache_dep, get_vector_store_dep
+from src.api.limits import resolve_tenant_limits
 from src.config import get_settings
 from src.db.models import User
 from src.storage.cache import CacheClient
@@ -32,16 +33,17 @@ def _sse_event(event_type: str, data: dict, seq: int) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
-async def _enforce_daily_quota(cache: CacheClient, current_user: User) -> None:
-    """G8: enforce a per-tenant daily query quota (demo tenants get the stricter
-    demo cap). Counts only real queries — cache hits are checked before this and
-    served free. Raises 429 once the cap is exceeded."""
+async def _enforce_daily_quota(cache: CacheClient, current_user: User, qpd: int) -> None:
+    """G8/§27: enforce the per-tenant daily query quota (demo tenants get the
+    stricter demo cap; everyone else gets their tenant's configured ``qpd``).
+    Counts only real queries — cache hits are checked before this and served
+    free. Raises 429 once the cap is exceeded."""
     if current_user.role.value == "demo":
         count = await cache.incr_demo_queries(current_user.tenant_id)
         limit = settings.rate_limit_demo_qpd
     else:
         count = await cache.incr_daily_queries(current_user.tenant_id)
-        limit = settings.rate_limit_default_qpd
+        limit = qpd
     if count > limit:
         raise HTTPException(
             status_code=429,
@@ -70,9 +72,22 @@ async def stream_query(
         current_user.tenant_id, body.question, body.collection_tags
     )
 
-    # G8: enforce the daily query quota on real (non-cached) queries only.
+    # §27: enforce daily quota + concurrency on real (non-cached) queries only.
+    # Cached answers are instant and take neither a QPD count nor a concurrency slot.
+    acquired = False
     if not cached:
-        await _enforce_daily_quota(cache, current_user)
+        limits = await resolve_tenant_limits(current_user.tenant_id)
+        await _enforce_daily_quota(cache, current_user, limits.qpd)
+        acquired = await cache.acquire_query_slot(
+            current_user.tenant_id, query_id, limits.max_concurrent,
+            settings.rate_limit_stream_max_seconds,
+        )
+        if not acquired:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many concurrent queries (limit {limits.max_concurrent}). Please wait for one to finish.",
+                headers={"Retry-After": "10"},
+            )
 
     context = AgentContext(
         tenant_id=current_user.tenant_id,
@@ -125,6 +140,12 @@ async def stream_query(
             logger.error("query stream failed for tenant=%s: %s", current_user.tenant_id, exc, exc_info=exc)
             yield _sse_event("error", {"message": "An internal error occurred while processing your query."}, 9999)
             yield _sse_event("done", {}, 10000)
+        finally:
+            # §27: release the concurrency slot on every exit path — normal end,
+            # error, or client disconnect (GeneratorExit). A missed release would
+            # still self-heal via the acquire-time purge, but release promptly.
+            if acquired:
+                await cache.release_query_slot(current_user.tenant_id, query_id)
 
     return StreamingResponse(
         event_generator(),

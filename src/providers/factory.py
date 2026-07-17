@@ -24,6 +24,10 @@ class ProviderSettings(BaseSettings):
     rerank_provider: str = "local"                      # local (only option for now)
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
 
+    # --- Speech-to-text (voice input) ---
+    stt_provider: str = "groq"                          # groq | openai
+    stt_model: str = "whisper-large-v3"
+
     # --- Provider credentials ---
     groq_api_key: str = ""
     openai_api_key: str = ""

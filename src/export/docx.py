@@ -107,3 +107,72 @@ def translation_to_docx(filename: str | None, target_language: str | None, resul
     for para in (result or "").split("\n"):
         d.add_paragraph(para)
     return _save(d)
+
+
+def redaction_to_docx(name: str, sections: list, unavailable: int = 0) -> bytes:
+    """Redacted document export (§28). ``sections`` is a list of
+    ``{filename, redacted_text, count}`` — one per source document. ``unavailable``
+    is the count of selected documents that could not be re-loaded at export time."""
+    d = _doc(name or "Redacted Documents", subtitle="Sensitive values removed")
+    if unavailable:
+        note = d.add_paragraph(
+            f"⚠ {unavailable} selected document(s) were unavailable at export time and are not included."
+        )
+        if note.runs:
+            note.runs[0].italic = True
+    for sec in sections or []:
+        d.add_heading(str(sec.get("filename") or "Document"), level=2)
+        p = d.add_paragraph(f"{sec.get('count', 0)} value(s) redacted")
+        if p.runs:
+            p.runs[0].italic = True
+        for para in (sec.get("redacted_text") or "").split("\n"):
+            d.add_paragraph(para)
+    # Disclosure: deterministic redaction covers structured identifiers only.
+    disc = d.add_paragraph(
+        "Note: automated redaction removes structured identifiers (Aadhaar, PAN, GSTIN, IFSC, "
+        "credit cards, email, phone). Person names and addresses detected via AI are flagged in "
+        "the scan report but are NOT automatically removed here — review manually before sharing."
+    )
+    if disc.runs:
+        disc.runs[0].italic = True
+    return _save(d)
+
+
+_STANCE_LABEL = {
+    "admits": "Admits",
+    "denies": "Denies",
+    "partially_admits": "Partly admits",
+    "not_addressed": "Not addressed",
+}
+
+
+def contentions_to_docx(
+    name: str,
+    issues: list | None,
+    results: list | None,
+    summary: str | None = None,
+) -> bytes:
+    """Issue × party contentions matrix, with an optional dispute summary."""
+    d = _doc(name or "Contentions Comparison")
+    if summary:
+        d.add_heading("Summary of dispute", level=2)
+        d.add_paragraph(summary)
+    issues = issues or []
+    results = results or []
+    if not issues:
+        d.add_paragraph("No distinct contentions could be identified.")
+        return _save(d)
+    d.add_heading("Issues", level=2)
+    headers = ["Issue"] + [str(p.get("filename") or p.get("document_id") or "") for p in results]
+    rows: list[list] = []
+    for it in issues:
+        key = it.get("key")
+        cells = [it.get("title", "")]
+        for p in results:
+            cell = (p.get("stances") or {}).get(key, {}) if isinstance(p, dict) else {}
+            label = _STANCE_LABEL.get(cell.get("stance"), "—")
+            text = cell.get("text") or ""
+            cells.append(f"{label}\n{text}" if text else label)
+        rows.append(cells)
+    _table(d, headers, rows)
+    return _save(d)

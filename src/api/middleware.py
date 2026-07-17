@@ -26,41 +26,75 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         return response
 
 
-class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Sliding-window rate limiting via Redis (§21).
+# POST requests under these prefixes are LLM-cost operations and share the
+# per-tenant per-minute (QPM) budget. GET/DELETE (reads, exports, deletes) are
+# cheap and NOT metered. Uploads are metered separately (per-hour ingestion).
+_METERED_POST_PREFIXES = (
+    "/query", "/review", "/redline", "/translation", "/lod", "/drafting", "/contentions", "/pii",
+)
+_UPLOAD_PREFIX = "/documents/upload"
 
-    Applied ONLY to /query routes — uploads, admin, and auth have different
-    throughput characteristics and must not share the query QPM budget.
-    Limit is per (tenant_id, minute).
+
+def _rate_limited(detail: str, retry_after: int) -> Response:
+    return Response(
+        content=f'{{"detail":"{detail}"}}',
+        status_code=429,
+        media_type="application/json",
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Per-tenant rate limiting via Redis (§21, §27).
+
+    Two independent fixed-window budgets, both keyed per tenant and sourced from
+    the tenant's ``RateLimitConfig`` (falling back to settings defaults):
+
+    * QPM — POST requests to the metered LLM endpoints (query + feature routers).
+    * Ingestion/hour — ``POST /documents/upload``.
+
+    Reads/exports/deletes are never throttled. Fails OPEN on a Redis outage.
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        if not request.url.path.startswith("/query"):
+        method = request.method
+        path = request.url.path
+
+        # Fast path: only POSTs to metered routes are candidates.
+        is_upload = method == "POST" and path.startswith(_UPLOAD_PREFIX)
+        is_metered = method == "POST" and any(path.startswith(p) for p in _METERED_POST_PREFIXES)
+        if not (is_upload or is_metered):
             return await call_next(request)
 
-        # Extract tenant from JWT without full auth flow (lightweight check)
         tenant_id = self._extract_tenant_id(request)
         if not tenant_id:
+            # No valid token -> let the endpoint's auth dependency reject it (401),
+            # and never attribute usage to a tenant we can't identify.
             return await call_next(request)
 
+        from src.api.limits import resolve_tenant_limits
         cache = get_cache()
+        limits = await resolve_tenant_limits(tenant_id)
+
+        if is_upload:
+            key = f"ing:hph:{tenant_id}:{int(time.time() // 3600)}"
+            count = await cache.incr_window(key, ttl=3600)
+            if count > limits.ingestion_per_hour:
+                return _rate_limited(
+                    f"Hourly upload limit reached ({limits.ingestion_per_hour}). Please try again later.",
+                    3600,
+                )
+            response = await call_next(request)
+            response.headers["X-RateLimit-Remaining"] = str(max(0, limits.ingestion_per_hour - count))
+            return response
+
+        # metered LLM POST -> QPM budget
         key = f"rl:qpm:{tenant_id}:{int(time.time() // 60)}"
-        allowed, count = await cache.rate_limit_check(
-            key, settings.rate_limit_default_qpm, window_seconds=60
-        )
-
+        allowed, count = await cache.rate_limit_check(key, limits.qpm, window_seconds=60)
         if not allowed:
-            return Response(
-                content='{"detail":"Rate limit exceeded. Please slow down."}',
-                status_code=429,
-                media_type="application/json",
-                headers={"Retry-After": "60"},
-            )
-
+            return _rate_limited("Rate limit exceeded. Please slow down.", 60)
         response = await call_next(request)
-        response.headers["X-RateLimit-Remaining"] = str(
-            max(0, settings.rate_limit_default_qpm - count)
-        )
+        response.headers["X-RateLimit-Remaining"] = str(max(0, limits.qpm - count))
         return response
 
     @staticmethod

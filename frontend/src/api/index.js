@@ -49,6 +49,22 @@ export async function downloadFile(path, fallbackName = 'download') {
   URL.revokeObjectURL(url)
 }
 
+// Voice input: upload a recorded audio blob for transcription. Returns { text }.
+export async function transcribeAudio(blob, filename = 'recording.webm') {
+  const fd = new FormData()
+  fd.append('file', blob, filename)
+  const res = await fetch(`${BASE}/transcribe/`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${getToken()}` },
+    body: fd,
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Transcription failed')
+  }
+  return res.json()
+}
+
 export const auth = {
   login:    (email, password) => request('POST', '/auth/login',    { email, password }),
   register: (email, password, tenant_name) => request('POST', '/auth/register', { email, password, tenant_name }),
@@ -139,11 +155,30 @@ export const drafting = {
   delete: (id)    => request('DELETE', `/drafting/${id}`),
 }
 
+export const contentions = {
+  list:   ()      => request('GET',    '/contentions/'),
+  get:    (id)    => request('GET',    `/contentions/${id}`),
+  create: (data)  => request('POST',   '/contentions/', data),
+  delete: (id)    => request('DELETE', `/contentions/${id}`),
+}
+
+export const pii = {
+  list:   ()      => request('GET',    '/pii/'),
+  get:    (id)    => request('GET',    `/pii/${id}`),
+  create: (data)  => request('POST',   '/pii/', data),
+  delete: (id)    => request('DELETE', `/pii/${id}`),
+}
+
 export const folders = {
   list:   ()          => request('GET',    '/folders/'),
   create: (name)      => request('POST',   '/folders/', { name }),
   rename: (id, name)  => request('PATCH',  `/folders/${id}`, { name }),
   delete: (id)        => request('DELETE', `/folders/${id}`),
+}
+
+export const skills = {
+  // Pre-built, domain-scoped workflow templates for the caller's tenant.
+  list: () => request('GET', '/skills/'),
 }
 
 export const admin = {

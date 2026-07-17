@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -268,3 +268,83 @@ async def get_tenant_info(
         "quota_queries_daily": tenant.quota_queries_daily,
         "llm_provider_override": tenant.llm_provider_override,
     }
+
+
+# ── Rate-limit config (§27) ─────────────────────────────────────────────────
+
+class RateLimitConfigOut(BaseModel):
+    queries_per_minute: int
+    queries_per_day: int
+    ingestion_per_hour: int
+    max_concurrent_queries: int
+    is_default: bool  # True if no per-tenant row exists yet (values are platform defaults)
+
+
+class RateLimitConfigIn(BaseModel):
+    queries_per_minute: int = Field(ge=1, le=100_000)
+    queries_per_day: int = Field(ge=1, le=10_000_000)
+    ingestion_per_hour: int = Field(ge=1, le=1_000_000)
+    max_concurrent_queries: int = Field(ge=1, le=10_000)
+
+
+@router.get("/rate-limit", response_model=RateLimitConfigOut)
+async def get_rate_limit(
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    from src.api.limits import default_limits
+    row = (
+        await db.execute(
+            select(RateLimitConfig).where(RateLimitConfig.tenant_id == current_user.tenant_id)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        d = default_limits()
+        return RateLimitConfigOut(
+            queries_per_minute=d.qpm, queries_per_day=d.qpd,
+            ingestion_per_hour=d.ingestion_per_hour, max_concurrent_queries=d.max_concurrent,
+            is_default=True,
+        )
+    return RateLimitConfigOut(
+        queries_per_minute=row.queries_per_minute,
+        queries_per_day=row.queries_per_day,
+        ingestion_per_hour=row.ingestion_per_hour,
+        max_concurrent_queries=row.max_concurrent_queries,
+        is_default=False,
+    )
+
+
+@router.put("/rate-limit", response_model=RateLimitConfigOut)
+async def update_rate_limit(
+    body: RateLimitConfigIn,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    from src.api.limits import invalidate_tenant_limits
+    row = (
+        await db.execute(
+            select(RateLimitConfig).where(RateLimitConfig.tenant_id == current_user.tenant_id)
+        )
+    ).scalar_one_or_none()
+    tenant = (
+        await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
+    ).scalar_one_or_none()
+    tier = tenant.tier.value if tenant else "starter"
+    if row is None:
+        row = RateLimitConfig(tenant_id=current_user.tenant_id, tier=tier)
+        db.add(row)
+    row.tier = tier
+    row.queries_per_minute = body.queries_per_minute
+    row.queries_per_day = body.queries_per_day
+    row.ingestion_per_hour = body.ingestion_per_hour
+    row.max_concurrent_queries = body.max_concurrent_queries
+    await db.commit()
+    # Drop the cached limits so the change takes effect on the next request.
+    await invalidate_tenant_limits(current_user.tenant_id)
+    return RateLimitConfigOut(
+        queries_per_minute=row.queries_per_minute,
+        queries_per_day=row.queries_per_day,
+        ingestion_per_hour=row.ingestion_per_hour,
+        max_concurrent_queries=row.max_concurrent_queries,
+        is_default=False,
+    )

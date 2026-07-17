@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
   Table2, Plus, Trash2, X, Play, FileText, Loader2, ChevronRight, RotateCcw, FileDown, Sparkles,
@@ -24,6 +25,7 @@ export default function ParallelReview() {
   const [addOpen, setAddOpen]           = useState(false)
   const [describe, setDescribe]         = useState('')      // free-text → auto columns
   const [suggesting, setSuggesting]     = useState(false)
+  const location = useLocation()
 
   const loadRecent = useCallback(async () => {
     try { setRecent(await reviewApi.list()) } catch { /* non-fatal */ }
@@ -33,6 +35,17 @@ export default function ParallelReview() {
     docsApi.list(0, 200).then(setDocs).catch(() => setError('Could not load documents.'))
     loadRecent()
   }, [loadRecent])
+
+  // Pre-fill columns + name when launched from a Skill (Chat welcome screen).
+  useEffect(() => {
+    const skill = location.state?.skill
+    const cols = skill?.preset?.questions
+    if (Array.isArray(cols) && cols.length) {
+      setQuestions(cols.map(q => ({ header: q.header || '', question: q.question || '' })))
+      if (skill.name && !name) setName(skill.name)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state])
 
   const readyDocs = docs.filter(d => d.status === 'ready' || d.status === 'ready_with_warnings')
   const shown = readyDocs.filter(d => d.filename.toLowerCase().includes(search.toLowerCase()))

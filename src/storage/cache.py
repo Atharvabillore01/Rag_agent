@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import time
 from functools import lru_cache
 
 import redis.asyncio as aioredis
@@ -98,6 +99,79 @@ return count
         post-increment count so the caller can enforce a daily quota."""
         key = f"qpd:{tenant_id}"
         return int(await self._r.eval(self._DEMO_QUOTA_LUA, 1, key, 86400))
+
+    async def incr_window(self, key: str, ttl: int) -> int:
+        """Atomic INCR + first-touch EXPIRE for an arbitrary fixed-window counter
+        (e.g. per-hour ingestion). Returns the post-increment count."""
+        return int(await self._r.eval(self._DEMO_QUOTA_LUA, 1, key, ttl))
+
+    # ── Per-tenant rate-limit config cache (§27) ─────────────────────────────
+    # Avoids a Postgres read on every metered request; short TTL so an admin
+    # change takes effect quickly even without explicit invalidation.
+
+    async def get_tenant_limits(self, tenant_id: str) -> dict | None:
+        """Cached per-tenant limits, or None on miss / Redis outage (fail-safe)."""
+        try:
+            raw = await self._r.get(f"rlcfg:{tenant_id}")
+            return json.loads(raw) if raw else None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("get_tenant_limits miss (Redis unavailable): %s", exc)
+            return None
+
+    async def set_tenant_limits(self, tenant_id: str, limits: dict, ttl: int = 60) -> None:
+        try:
+            await self._r.setex(f"rlcfg:{tenant_id}", ttl, json.dumps(limits))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("set_tenant_limits failed (Redis unavailable): %s", exc)
+
+    async def invalidate_tenant_limits(self, tenant_id: str) -> None:
+        try:
+            await self._r.delete(f"rlcfg:{tenant_id}")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("invalidate_tenant_limits failed (Redis unavailable): %s", exc)
+
+    # ── Concurrency limiter — self-healing sorted set (§27) ───────────────────
+    # A ZSET of in-flight request members scored by start time. Acquire first
+    # purges entries older than the max-stream TTL, so a missed release (client
+    # disconnect, crash) can NEVER permanently exhaust a tenant's slots.
+    _ACQUIRE_SLOT_LUA = """
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+local count = redis.call('ZCARD', KEYS[1])
+if count < tonumber(ARGV[2]) then
+    redis.call('ZADD', KEYS[1], ARGV[3], ARGV[4])
+    redis.call('EXPIRE', KEYS[1], ARGV[5])
+    return 1
+end
+return 0
+"""
+
+    async def acquire_query_slot(self, tenant_id: str, member: str, max_slots: int, ttl: int) -> bool:
+        """Try to take one concurrency slot. Returns True if acquired.
+
+        Fails OPEN (returns True) on a Redis outage — a transient cache failure
+        must not block queries (G20)."""
+        now = time.time()
+        try:
+            got = await self._r.eval(
+                self._ACQUIRE_SLOT_LUA, 1, f"conc:{tenant_id}",
+                now - ttl, max_slots, now, member, ttl,
+            )
+            return bool(int(got))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("acquire_query_slot failing open (Redis unavailable): %s", exc)
+            return True
+
+    async def release_query_slot(self, tenant_id: str, member: str) -> None:
+        try:
+            await self._r.zrem(f"conc:{tenant_id}", member)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("release_query_slot failed (Redis unavailable): %s", exc)
+
+    async def active_query_slots(self, tenant_id: str) -> int:
+        try:
+            return int(await self._r.zcard(f"conc:{tenant_id}"))
+        except Exception:  # noqa: BLE001
+            return 0
 
     # ── JWT revocation denylist (G14) ────────────────────────────────────────
 

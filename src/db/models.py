@@ -605,6 +605,93 @@ class Draft(Base):
     )
 
 
+# ── Contentions Comparison / pleadings analysis (feature-implementation-plan §26) ─
+
+class ContentionAnalysis(Base):
+    """A saved comparison of rival contentions across a set of pleadings.
+
+    The disputed issues are derived by the model itself (not user-supplied like
+    Parallel Review); each pleading's stance on each issue is then classified and
+    an overall dispute summary is written. `issues` and `results` are stored as
+    JSON (structured, re-viewable); `summary` is EncryptedText because it is a
+    narrative analysis of client documents (G11, like Draft/Translation).
+    """
+
+    __tablename__ = "contention_analyses"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    document_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    # Derived issues: list of {key, title, summary}.
+    issues: Mapped[list | None] = mapped_column(JSON)
+    # Per-document positions: list of
+    #   {document_id, filename, stances: {issue_key: {stance, text}}, error: str|null}.
+    results: Mapped[list | None] = mapped_column(JSON)
+    # Narrative dispute summary (G11: encrypted at rest).
+    summary: Mapped[str | None] = mapped_column(EncryptedText)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_contention_analyses_tenant_id", "tenant_id"),
+        Index("ix_contention_analyses_tenant_created", "tenant_id", "created_at"),
+    )
+
+
+# ── Sensitive-data scan / PII (feature-implementation-plan §28) ───────────────
+
+class SensitiveScan(Base):
+    """A saved PII / sensitive-data scan over a set of documents.
+
+    Privacy by design: `results` stores only *masked* findings
+    ({type, masked, snippet, page}) and never the raw identifier — so this record
+    is not itself a PII store. Redaction re-derives from the live document.
+    """
+
+    __tablename__ = "sensitive_scans"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    document_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    # list of {document_id, filename, findings: [{type, masked, snippet, page}], counts}
+    results: Mapped[list | None] = mapped_column(JSON)
+    # {counts: {type: n}, total: n}
+    summary: Mapped[dict | None] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_sensitive_scans_tenant_id", "tenant_id"),
+        Index("ix_sensitive_scans_tenant_created", "tenant_id", "created_at"),
+    )
+
+
 # ── Folders / matters (feature-implementation-plan §23) ───────────────────────
 
 class Folder(Base):

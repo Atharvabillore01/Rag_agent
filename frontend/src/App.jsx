@@ -9,6 +9,8 @@ import ParallelReview from './pages/ParallelReview'
 import Redline       from './pages/Redline'
 import Translation   from './pages/Translation'
 import ListOfDates   from './pages/ListOfDates'
+import Contentions   from './pages/Contentions'
+import SensitiveScan from './pages/SensitiveScan'
 import Drafting      from './pages/Drafting'
 import Admin         from './pages/Admin'
 import Observability from './pages/Observability'
@@ -28,6 +30,8 @@ export default function App() {
             <Route path="/redline"       element={<Redline />} />
             <Route path="/translation"   element={<Translation />} />
             <Route path="/lod"           element={<ListOfDates />} />
+            <Route path="/contentions"   element={<Contentions />} />
+            <Route path="/sensitive"     element={<SensitiveScan />} />
             <Route path="/drafting"      element={<Drafting />} />
             <Route path="/admin"         element={<Admin />} />
             <Route path="/observability" element={<Observability />} />

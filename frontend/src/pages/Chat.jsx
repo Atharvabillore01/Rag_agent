@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Send, MessageSquare, Sparkles, FileSearch, FileText, ListChecks } from 'lucide-react'
-import { streamQuery } from '../api'
+import { Send, MessageSquare, Sparkles, FileSearch, FileText, ListChecks, Mic, Square, Table2, PenLine, CalendarClock, GitCompare, Languages, Wand, Scale, ShieldAlert } from 'lucide-react'
+import { streamQuery, transcribeAudio, skills as skillsApi } from '../api'
 import { useChatStore } from '../stores/chatStore'
 import { useAuthStore } from '../stores/authStore'
 import MessageBubble from '../components/MessageBubble'
@@ -14,7 +15,51 @@ const SUGGESTIONS = [
   { icon: Sparkles,   text: 'Compare these documents and highlight the differences.',          label: 'Compare'    },
 ]
 
-function WelcomeScreen({ onSuggest }) {
+// A skill's `feature` → the page it pre-fills, plus a label/icon for its chip.
+const FEATURE_META = {
+  parallel_review: { route: '/review',      icon: Table2,        label: 'Review'    },
+  drafting:        { route: '/drafting',    icon: PenLine,       label: 'Draft'     },
+  lod:             { route: '/lod',         icon: CalendarClock, label: 'Dates'     },
+  redline:         { route: '/redline',     icon: GitCompare,    label: 'Redline'   },
+  translation:     { route: '/translation', icon: Languages,     label: 'Translate' },
+  contentions:     { route: '/contentions', icon: Scale,         label: 'Contentions' },
+  pii:             { route: '/sensitive',   icon: ShieldAlert,   label: 'Redact' },
+}
+
+// Domain-scoped skill templates. Clicking routes to the feature with the skill's
+// preset in router state so the target page can pre-fill (Review/Drafting do).
+function SkillsStrip({ skills, onLaunch }) {
+  if (!skills.length) return null
+  return (
+    <div className="w-full max-w-lg mt-8">
+      <div className="flex items-center gap-2 mb-3">
+        <Wand size={13} className="text-duck-blue" />
+        <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Skills</p>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {skills.map(sk => {
+          const meta = FEATURE_META[sk.feature] || { icon: Sparkles, label: sk.feature }
+          const Icon = meta.icon
+          return (
+            <motion.button
+              key={sk.id}
+              whileHover={{ scale: 1.03, y: -1 }}
+              whileTap={{ scale: 0.97 }}
+              onClick={() => onLaunch(sk)}
+              title={sk.description}
+              className="flex items-center gap-1.5 text-xs text-duck-navy bg-white border border-slate-200 rounded-full pl-2.5 pr-3 py-1.5 hover:border-duck-blue hover:text-duck-blue transition-colors"
+            >
+              <Icon size={13} className="text-duck-blue" />
+              {sk.name}
+            </motion.button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function WelcomeScreen({ onSuggest, skills, onLaunchSkill }) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -51,14 +96,20 @@ function WelcomeScreen({ onSuggest }) {
           </motion.button>
         ))}
       </div>
+      <SkillsStrip skills={skills} onLaunch={onLaunchSkill} />
     </motion.div>
   )
 }
 
 export default function Chat() {
   const [input, setInput] = useState('')
+  const [recording, setRecording] = useState(false)
+  const [skills, setSkills] = useState([])
+  const navigate          = useNavigate()
   const bottomRef         = useRef(null)
   const inputRef          = useRef(null)
+  const recorderRef       = useRef(null)
+  const chunksRef         = useRef([])
 
   const {
     currentMessages, streaming, statusSteps, thoughts,
@@ -73,6 +124,23 @@ export default function Chat() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, statusSteps])
+
+  // Load the tenant's domain-scoped skills for the welcome screen (best-effort).
+  useEffect(() => {
+    let cancelled = false
+    skillsApi.list()
+      .then(res => { if (!cancelled) setSkills(res.skills || []) })
+      .catch(() => { /* skills are optional — welcome screen still works without them */ })
+    return () => { cancelled = true }
+  }, [])
+
+  // Launch a skill: route to its feature page with the preset in router state so
+  // the target page can pre-fill (Review seeds columns, Drafting seeds the brief).
+  function launchSkill(sk) {
+    const route = FEATURE_META[sk.feature]?.route
+    if (!route) return
+    navigate(route, { state: { skill: { name: sk.name, preset: sk.preset || {} } } })
+  }
 
   async function send(question) {
     if (!question.trim() || streaming) return
@@ -117,6 +185,30 @@ export default function Chat() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input) }
   }
 
+  async function toggleMic() {
+    if (recording) { recorderRef.current?.stop(); return }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const rec = new MediaRecorder(stream)
+      chunksRef.current = []
+      rec.ondataavailable = e => { if (e.data.size) chunksRef.current.push(e.data) }
+      rec.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop())
+        setRecording(false)
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+        if (!blob.size) return
+        try {
+          const { text } = await transcribeAudio(blob)
+          if (text) setInput(v => (v ? v.trim() + ' ' : '') + text)
+          inputRef.current?.focus()
+        } catch { /* transcription failed — leave input unchanged */ }
+      }
+      recorderRef.current = rec
+      rec.start()
+      setRecording(true)
+    } catch { /* mic permission denied / unavailable */ }
+  }
+
   const hasMessages = messages.length > 0
 
   return (
@@ -144,7 +236,11 @@ export default function Chat() {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto scrollbar-thin">
         {!hasMessages ? (
-          <WelcomeScreen onSuggest={t => { setInput(t); setTimeout(() => send(t), 50) }} />
+          <WelcomeScreen
+            onSuggest={t => { setInput(t); setTimeout(() => send(t), 50) }}
+            skills={skills}
+            onLaunchSkill={launchSkill}
+          />
         ) : (
           <div className="py-6 space-y-6">
             <AnimatePresence>
@@ -201,6 +297,20 @@ export default function Chat() {
               }}
             />
           </div>
+          <button
+            type="button"
+            onClick={toggleMic}
+            disabled={streaming}
+            title={recording ? 'Stop recording' : 'Dictate'}
+            className={`w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 border transition-colors
+                        disabled:opacity-40 disabled:cursor-not-allowed ${
+              recording
+                ? 'bg-red-50 border-red-200 text-red-500 animate-pulse'
+                : 'bg-white border-slate-200 text-slate-500 hover:text-duck-blue hover:border-duck-blue'
+            }`}
+          >
+            {recording ? <Square size={16} /> : <Mic size={18} />}
+          </button>
           <motion.button
             whileHover={{ scale: 1.04 }}
             whileTap={{ scale: 0.96 }}

@@ -119,6 +119,10 @@ class Settings(BaseSettings):
     rate_limit_default_qpm: int = 20       # queries per minute
     rate_limit_default_qpd: int = 1000     # queries per day
     rate_limit_demo_qpd: int = 30
+    rate_limit_default_ingestion_per_hour: int = 50   # uploads per hour (per tenant)
+    rate_limit_default_max_concurrent: int = 5        # in-flight streaming queries
+    rate_limit_stream_max_seconds: int = 300          # self-heal TTL for concurrency slots
+    rate_limit_config_cache_seconds: int = 60         # per-tenant limits cache TTL
 
     # ── Demo quotas ───────────────────────────────────────────────────────────
     demo_max_documents: int = 5

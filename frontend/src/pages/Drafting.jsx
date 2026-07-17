@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useLocation } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
@@ -16,6 +17,7 @@ export default function Drafting() {
   const [recent, setRecent]       = useState([])
   const [error, setError]         = useState('')
   const [search, setSearch]       = useState('')
+  const location = useLocation()
 
   const loadRecent = useCallback(async () => {
     try { setRecent(await draftingApi.list()) } catch { /* non-fatal */ }
@@ -25,6 +27,17 @@ export default function Drafting() {
     docsApi.list(0, 200).then(setDocs).catch(() => setError('Could not load documents.'))
     loadRecent()
   }, [loadRecent])
+
+  // Pre-fill the brief + name when launched from a Skill (Chat welcome screen).
+  useEffect(() => {
+    const skill = location.state?.skill
+    const preset = skill?.preset
+    if (preset?.instruction) {
+      setInstruction(preset.instruction)
+      if (skill.name && !name) setName(skill.name)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state])
 
   const readyDocs = docs.filter(d => d.status === 'ready' || d.status === 'ready_with_warnings')
   const shown = readyDocs.filter(d => d.filename.toLowerCase().includes(search.toLowerCase()))

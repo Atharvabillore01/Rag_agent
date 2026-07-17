@@ -648,5 +648,169 @@ Organize documents into folders ("matters"), as in the demo's file library. Clos
 
 ---
 
+## 24. FEATURE — Voice input (speech-to-text)
+
+### 24.1 What
+Dictate queries/requests by voice (the demo used voice throughout). Groq serves Whisper on the same key, so this is verifiable now.
+
+### 24.2 Components
+- **STT module** `src/providers/stt.py` — `transcribe_audio(data, filename)` via the configured provider (Groq/OpenAI, both OpenAI-compatible audio API). Config `stt_provider` (groq) + `stt_model` (whisper-large-v3).
+- **API** `POST /transcribe` (viewer) — multipart audio → `{text}`; extension + 25 MB size validation; transcription errors sanitized (502, logged).
+- **Frontend** — a mic button on the Chat input (MediaRecorder → `/transcribe` → fills the input). Static-audited.
+
+### 24.3 Acceptance criteria
+- Real generated speech (`say`+`ffmpeg`) transcribes to text containing the spoken content; endpoint returns `{text}`.
+- Unsupported type → 400; empty → 400; oversize → 413; provider failure → 502 (no internals leaked).
+
+### 24.4 Status — DONE, audited (7/7)
+- [x] `src/providers/stt.py` (Groq/OpenAI Whisper) + config `stt_provider`/`stt_model` (defaults use the existing Groq key — no new key needed).
+- [x] `POST /transcribe` (viewer, validation, sanitized 502) + registered.
+- [x] Audit 7/7: real generated speech (`say`+`ffmpeg`) → correct transcript incl. amount + month; endpoint; bad-ext/empty → 400.
+- [x] Frontend: mic button on the Chat input (MediaRecorder → `/transcribe` → fills input), static-audited + brace-balanced.
+
+---
+
+## 25. FEATURE — Skills library (domain packs)
+
+### 25.1 What
+Pre-built, domain-aware workflow templates ("In-Built Skills" in the demo) that pre-fill a feature: e.g. Legal → "Change-of-Control Tracker" (Parallel Review columns), "Reply to Demand Notice" (drafting); CA → "Reply to Tax Notice", "Invoice/GST Extraction". Operationalizes the `tenant.domain` foundation.
+
+### 25.2 Components
+- **Registry** `src/skills.py` — a static list of skills `{id, domain, name, description, feature, preset}`; `get_skills_for_domain(domain)` returns that domain's skills + generic ones. Adding a skill = editing one file (config, not code).
+- **API** `GET /skills` (viewer) — returns skills for the caller's tenant domain (+ generic).
+- **Frontend** — skills surfaced on the Chat welcome; clicking routes to the skill's feature (pre-fill on arrival deferred). Static-audited.
+
+### 25.3 Acceptance criteria
+- `get_skills_for_domain('legal')` → legal + generic (no ca); `'ca'` → ca + generic; unknown/generic → generic only.
+- Every skill's `feature` is a known feature and its `preset` is well-formed (parallel_review presets have `questions[{header,question}]`; drafting has `instruction`).
+- `GET /skills` returns the tenant-domain skills.
+
+### 25.4 Status
+- [x] registry + get_skills_for_domain — `src/skills.py` (generic/legal/ca; vertical-first ordering)
+- [x] endpoint + register — `GET /skills` (`src/api/routers/skills.py`), tenant-domain scoped
+- [x] audit — **22/22 PASS** (registry shape + preset well-formedness + domain filtering; live handler for legal/ca/generic scoped correctly)
+- [x] frontend — `skills` API client; domain skills as chips on the Chat welcome (`SkillsStrip`); launching routes to the feature with the preset in router state; Parallel Review pre-fills columns, Drafting pre-fills the brief. Static-audited (esbuild/babel libs stripped → JSX-lexer balance check vs known-good controls; icons vs manifest; no IDA). **Pre-fill for lod/redline/translation deferred** (chips route there but those pages don't yet read the preset).
+
+---
+
+## 26. FEATURE — Contentions Comparison (pleadings analysis)
+
+### 26.1 What
+Compare the rival contentions across a set of pleadings (plaint vs written statement, petition vs counter-affidavit, or N submissions). The system **derives the disputed issues itself** (unlike Parallel Review, where the user supplies the columns), then classifies each pleading's stance on each issue and writes an overall dispute summary. Output is an issue × party matrix + narrative summary. A legal litigation skill; verifiable on the text-only Groq key.
+
+### 26.2 Design
+- **Two-stage, bounded.** (1) One LLM call extracts up to `MAX_ISSUES` distinct issues from the combined (labelled, per-doc-truncated) pleadings → `[{key,title,summary}]`. (2) One JSON call *per document* classifies that document's stance on every issue → `{issue_key: {stance, text}}`. (3) One call synthesizes the dispute summary. Total LLM calls = `n_docs + 2` (bounded by `MAX_DOCS+2`).
+- **Stances** coerced to a fixed vocabulary: `admits | denies | partially_admits | not_addressed`.
+- Reuses `src/review/loader.load_document_texts` (tenant-scoped, ready-only, no cross-tenant leakage) and the review engine's `_complete_with_retry` / `_extract_json` helpers (DRY, already battle-tested). Per-document failures are isolated (captured in that doc's `error`, never abort the run) — same contract as `run_review`.
+- **Storage** `ContentionAnalysis`: `issues` + `results` as JSON (structured, like Review/Redline/LoD); `summary` as `EncryptedText` (narrative analysis of client documents — encrypted at rest, consistent with Draft/Translation, G11).
+
+### 26.3 Components
+- Model `ContentionAnalysis` (table `contention_analyses`) + migration `0009`.
+- Engine `src/contentions/engine.py`: `extract_issues`, `classify_positions`, `run_contentions`.
+- Router `src/api/routers/contentions.py` (create=editor, read/list/export=viewer, delete=editor) + `contentions_to_docx`.
+- Skill `compare-contentions` (legal) → feature `contentions`; `FEATURES`/`FEATURE_META`/sidebar/route wiring.
+- Frontend `Contentions.jsx` (select 2+ docs → issue×party matrix + summary, export, recent list, skill pre-fill).
+
+### 26.4 Acceptance criteria
+- Create requires ≥2 tenant-owned, ready documents (400/404 otherwise); rejects >`MAX_DOCS`.
+- Cross-tenant document ids are rejected (loader ownership check) — no leakage.
+- `issues` non-empty for adversarial pleadings; every position has a stance in the fixed vocabulary for every issue key; a contrived plaint/written-statement pair yields at least one `admits` and one `denies`.
+- One document's LLM failure doesn't abort the run.
+- `summary` round-trips through encryption (stored ciphertext, read back plaintext).
+- Adversarial code review: no confirmed correctness/security/tenant-isolation findings survive verification.
+
+### 26.5 Status
+- [x] model + migration — `ContentionAnalysis` + `0009` (applied to live DB, columns verified)
+- [x] engine — `src/contentions/engine.py` (reuses review-engine helpers; n+2 bounded calls; per-doc isolation)
+- [x] router + export + register — `src/api/routers/contentions.py` + `contentions_to_docx`
+- [x] skill + wiring — legal `compare-contentions` skill; `FEATURES`/`FEATURE_META`/sidebar/route
+- [x] frontend — `Contentions.jsx` (issue×party matrix + summary, export, per-doc error surfaced), api client, static-audited
+- [x] adversarial review workflow — 5 dims × adversarial verify (9 agents); **4 findings raised, 4 confirmed, all LOW, 0 critical/high**; all 4 fixed:
+  - bare-string classify cell no longer rendered as a fake quote (self-contradiction)
+  - `document_ids` capped at `MAX_DOCS` at parse (422) before in-memory dedup
+  - `list` clamps negative `skip`/`limit` (was a Postgres 500)
+  - per-document analysis errors now surfaced in the results view
+- [x] live audit → **RESULT 43/43** (real Groq: adversarial plaint vs written statement → admits+denies; determinism/coercion/per-doc isolation; router lifecycle; validation; tenant-isolation/IDOR; summary encryption round-trip; docx edge cases)
+
+---
+
+## 27. FEATURE — Rate-limit hardening (per-tenant RateLimitConfig enforcement, finishes G8)
+
+### 27.1 Problem
+`RateLimitConfig` (per-tenant qpm/qpd/ingestion_per_hour/max_concurrent_queries) was **dead config** — never read. `RateLimitMiddleware` gated only `/query` with a flat `settings` QPM, so every expensive LLM endpoint (`/review`, `/redline`, `/translation`, `/lod`, `/drafting`, `/contentions`) and every upload had **no rate limiting** (surfaced by the §26 review). QPD used the settings default, not the tenant's tier.
+
+### 27.2 Design
+- **Resolver** `src/api/limits.py::resolve_tenant_limits(tenant_id) -> TenantLimits` — Redis cache (`rlcfg:{tenant}`, 60s) → `RateLimitConfig` row → settings defaults. Fail-safe to defaults on any DB/Redis hiccup (never 500 the hot path). `invalidate_tenant_limits` on admin update.
+- **QPM (per-minute)** — middleware now meters **all POSTs** under the metered LLM prefixes (query + 6 feature routers), keyed `rl:qpm:{tenant}:{minute}`, limit = tenant's `queries_per_minute`. Reads/deletes/exports (GET/DELETE) are not metered.
+- **Ingestion (per-hour)** — `POST /documents/upload` metered `ing:hph:{tenant}:{hour}`, limit = tenant's `ingestion_per_hour` (kept out of the QPM budget).
+- **QPD (per-day)** — `query.py::_enforce_daily_quota` now uses the tenant's `queries_per_day` (demo tenants keep the stricter demo cap).
+- **Concurrency** — `max_concurrent_queries` enforced on `/query/stream` via a **self-healing** Redis sorted set (`conc:{tenant}`): acquire purges entries older than a max-stream TTL then ZADDs if under the cap; released in the stream generator's `finally` (covers normal end, error, client disconnect). Stale slots auto-expire, so a missed release can never permanently lock a tenant. Cached answers take no slot.
+- **Admin API** — `GET/PUT /admin/rate-limit` (org_admin) to view/update the tenant's `RateLimitConfig`; upsert + cache invalidation. (Frontend deferred.)
+- All limiters **fail open** on Redis outage (G20), consistent with the existing `rate_limit_check`.
+
+### 27.3 Acceptance criteria
+- Resolver returns the `RateLimitConfig` row when present, settings defaults otherwise; result cached and invalidated on update.
+- QPM: N+1th metered POST in a minute → 429 (per tenant, per its configured qpm); a second tenant is unaffected; GETs never throttled.
+- Ingestion: N+1th upload in an hour → 429 at its own limit, independent of QPM.
+- QPD: uses per-tenant value; demo cap unchanged.
+- Concurrency: acquire up to the cap, next rejected; release frees a slot; a stale slot is purged (self-heal) so no permanent lockout.
+- Admin PUT upserts and takes effect (post-invalidation resolve reflects the new values).
+- Every limiter fails open when Redis is down.
+
+### 27.4 Status
+- [x] config defaults + cache helpers (`incr_window`, tenant-limits cache, self-healing concurrency ZSET) + resolver `src/api/limits.py`
+- [x] middleware — per-tenant QPM broadened to all metered LLM POSTs (query + 6 feature routers) + per-hour ingestion on uploads; GET/DELETE never metered; fails open
+- [x] query — per-tenant QPD; `max_concurrent_queries` via acquire (endpoint) + release (generator `finally`, covers disconnect)
+- [x] admin — `GET/PUT /admin/rate-limit` (upsert + cache invalidation; `is_default` flag)
+- [x] live audit → **RESULT 27/27** (resolver; cache helpers incl. self-heal purge; per-tenant QPD + demo-cap; real middleware via crafted requests + JWTs — QPM/ingestion/tenant-isolation/GET-passthrough/no-token; admin GET/PUT + cache invalidation; fail-open on Redis outage)
+- [ ] frontend admin UI for rate-limit config — **deferred** (backend API is live and audited)
+
+**Note:** `RateLimitMiddleware` now covers the §26-flagged gap (`/contentions` and all sibling feature routers are metered). G8 is complete (per-tenant QPD + QPM + ingestion + concurrency all sourced from `RateLimitConfig`).
+
+---
+
+## 28. FEATURE — Sensitive-Data Scan & Redaction (PII / DLP)
+
+### 28.1 What
+Scan selected documents for sensitive identifiers and produce (a) a findings report grouped by type and (b) a **redacted** copy. Targets the Indian market (DPDP Act 2023): Aadhaar, PAN, GSTIN, IFSC, plus generic email / phone / credit-card. Useful across all domains (generic skill), not just legal.
+
+### 28.2 Design — privacy by design
+- **Deterministic detector** `src/pii/engine.py`: regex per type, hardened with checksums to kill false positives — **Verhoeff** for Aadhaar, **Luhn** for credit cards. Overlapping matches de-duplicated (longest-wins). Optional LLM pass (Groq) for person names/addresses, gated by a `use_llm` flag.
+- **We never persist raw PII.** A finding stores only `{type, masked, page, snippet}` where `masked` shows a few edge chars and the `snippet` has the value masked in-context. The DB scan record is therefore not itself a PII store — stronger than persisting findings verbatim.
+- **Redaction export re-derives from the live document** at export time (tenant-scoped load → scan → mask), so the redacted DOCX never requires storing the original values either.
+
+### 28.3 Components
+- Engine `src/pii/engine.py`: `scan_text`, `redact_text`, `mask_value`, `_verhoeff_valid`, `_luhn_valid`, `run_scan` (per-doc, page-attributed via `load_document_chunks`).
+- Model `SensitiveScan` (table `sensitive_scans`) + migration `0010`.
+- Router `src/api/routers/pii.py` (create=editor, read/export=viewer, delete=editor) + `redaction_to_docx`.
+- Skill `scan-sensitive-data` (generic) → feature `pii`; `FEATURES`/`FEATURE_META`/sidebar/route wiring.
+- Frontend `SensitiveScan.jsx` (findings by type + counts + redacted export).
+
+### 28.4 Acceptance criteria
+- Valid Aadhaar (Verhoeff-passing) detected; a random 12-digit string that fails the checksum is NOT flagged. Valid Luhn card detected; invalid rejected. PAN/GSTIN/IFSC/email/phone detected on positive samples, absent on negatives.
+- Findings never contain the raw value (only `masked`); `redact_text` removes every detected value from the output.
+- Cross-tenant/missing docs rejected (loader); create requires ≥1 ready doc.
+- Redacted export re-derives from the live doc and contains no raw identifiers.
+- Adversarial review: no confirmed correctness/security/privacy finding survives verification.
+
+### 28.5 Status
+- [x] engine + checksums — `src/pii/engine.py` (Verhoeff/Luhn, de-dup, mask, redact, run_scan)
+- [x] model + migration — `SensitiveScan` + `0010` (applied; masked-only storage)
+- [x] router + export + register — `src/api/routers/pii.py` + `redaction_to_docx`
+- [x] skill + wiring — generic `scan-sensitive-data`; `FEATURES`/`FEATURE_META`/sidebar/route; `/pii` metered for QPM
+- [x] frontend — `SensitiveScan.jsx` (findings by type + counts + redacted export + AI-names toggle), static-audited
+- [x] adversarial review (9 dims-agents + verifiers, 23 agents, ~1.0M tokens) — **18 raised, 11 confirmed**; **all fixed**:
+  - *(caught first by my own live audit)* snippet leaked neighbouring raw PII → snippets now drawn from fully-masked text
+  - **ReDoS** in email regex (O(n²)) → non-overlapping bounded grammar (80k-char adversarial input: ~11ms)
+  - `run_scan` unbounded + event-loop blocking → `MAX_SCAN_CHARS_PER_DOC` cap + `asyncio.to_thread` offload
+  - `redact_text` O(findings×len) → single-pass rebuild; export offloads to a thread
+  - Aadhaar missed hyphen/multi-space separators → broadened; card regex swallowed a trailing separator → anchored to digits
+  - masks hardened (Aadhaar → last-4 only; email → domain name masked)
+  - "redacted" export can't remove AI-detected names/addresses → explicit disclosure in the DOCX; export notes unavailable docs
+  - **Accepted-as-designed (documented):** a valid card embedded inside a longer digit run is not detected — a deliberate precision/recall tradeoff to avoid false positives on long numeric IDs.
+- [x] live audit → **RESULT 49/49** (detector core; review-fix regressions; run_scan + LLM pass; router lifecycle; privacy-at-rest verified at DB layer AND in the exported DOCX; validation; tenant-isolation/IDOR)
+
+---
+
 ## 6. Features 5–7 — specs to be expanded when reached
 Each remaining feature gets a §-section like Feature 1 (components / acceptance / audit) at the moment we start it, so specs stay honest to the code that exists then rather than guessed up front.
