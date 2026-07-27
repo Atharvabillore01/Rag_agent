@@ -22,6 +22,7 @@ DOMAINS: dict[str, str] = {
     "generic": "General",
     "legal": "Legal",
     "ca": "Chartered Accountancy / Tax",
+    "clinic": "Clinic / Healthcare",
 }
 
 

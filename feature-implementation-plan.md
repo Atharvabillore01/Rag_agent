@@ -888,5 +888,160 @@ Review a contract against a **playbook** of standard positions and flag, per cla
 
 ---
 
+## 31. FEATURE — Platform Admin console (cross-tenant super-admin)
+
+### 31.1 What
+A super-admin surface *above* any single org (the existing `/admin` panel is org-scoped). Lets a **platform admin** create/list organizations, manage members across orgs, set each org's tier/quotas/rate-limits, and see per-org usage. Foundation for §32 billing.
+
+### 31.2 Design
+- **Identity:** new boolean `User.is_platform_admin` (a platform admin is a normal user — belonging to some org — with cross-tenant privilege). Cleaner than a tenant-role enum value. `require_platform_admin` dependency checks the flag; platform endpoints are **NOT** tenant-scoped.
+- **Bootstrap:** `seed_admin.py` marks the first admin `is_platform_admin=True` (the platform owner).
+- **Endpoints** `/platform/*` (all `require_platform_admin`):
+  - `GET /platform/orgs` — every tenant with tier, is_active, quotas, user/document counts.
+  - `POST /platform/orgs` — create tenant + its first `org_admin` (password-policy enforced).
+  - `GET /platform/orgs/{tid}` — tenant + members + usage (documents, queries today).
+  - `PATCH /platform/orgs/{tid}` — name/tier/quotas/`is_active` (suspend/reactivate).
+  - `POST /platform/orgs/{tid}/members` / `PATCH .../members/{uid}` — add / update (role, active) a user in any org.
+  - `GET|PUT /platform/orgs/{tid}/rate-limit` — reuse `RateLimitConfig` + `invalidate_tenant_limits`.
+- Every mutation writes an `AuditLog` row.
+
+### 31.3 Acceptance criteria
+- A non-platform-admin (even an `org_admin`) gets **403** on every `/platform/*` route; a platform admin can act across tenants.
+- Create org → tenant + first org_admin exist; login for that admin works; password policy enforced.
+- Update tier/quota/`is_active` persists; suspending an org blocks its users' access.
+- Add/patch member scoped to the *target* org; usage counts (docs, queries-today) are correct.
+- Adversarial review: no confirmed privilege-escalation / cross-tenant / correctness finding survives.
+
+### 31.4 Status
+- [x] role flag + migration 0013 (`User.is_platform_admin`) + `require_platform_admin`; `get_current_user` now enforces `tenant.is_active` (suspend) with platform-admin exemption
+- [x] `/platform` router (orgs list/create/get/update, members add/update, per-org rate-limit, usage) + registered
+- [x] bootstrap — `seed_admin.py` marks the first admin `is_platform_admin=True`
+- [x] live audit → **RESULT 25/25** (RBAC gate; org lifecycle + password policy; usage; tier/quota; suspend lockout + admin exemption; cross-tenant members; per-org rate-limit resolver; 404s)
+- [x] JWT + authStore carry `is_platform_admin` (UI gate only; server re-checks the DB)
+- [x] **Phase 3 frontend** — `PlatformConsole.jsx` (orgs table, create-org, per-org detail: usage, tier/quota edit, suspend/reactivate, members add/role/deactivate, rate-limit editor); sidebar "Platform" section + `/platform` route, both gated on `is_platform_admin`; static-audited (balanced, icons valid incl. legacy `Loader2`/`CheckCircle2`, no IDA)
+- [x] adversarial review (17 agents, privilege-escalation focus) — **13 raised, 11 confirmed, all fixed**:
+  - **[HIGH] cross-tenant duplicate email → login 500 (auth DoS):** `create_org`/`add_member` now enforce **global** email uniqueness (`_email_taken`, matching register) + `IntegrityError→409`; `login`/`register` lookups use `.first()` (deterministic) so a stray duplicate degrades gracefully instead of raising `MultipleResultsFound`.
+  - **[MED] Redis outage 500'd org endpoints:** `get_rate_limit_count` now fails safe (returns 0).
+  - **[LOW] audit `resource_id` was null:** user row flushed before the audit write, so `resource_id` is captured.
+  - **[LOW] `add_member` TOCTOU race:** `IntegrityError→409` on commit.
+  - **[LOW] extra per-request DB round-trip:** `get_current_user` now fetches user + `tenant.is_active` in ONE joined query.
+- [x] **Move member to another org** (user request) — `POST /platform/orgs/{tid}/members/{uid}/move` (source/target validated, collection tags cleared, docs stay with old org, audited) + console "Move" action.
+- [x] re-audit → **RESULT 35/35** (all original checks + Suite 8 regressions for every fix + move-member)
+
+**Note:** creating orgs and changing an org's tier were already platform-admin powers; "move user to a different tier" is delivered as move-member-to-another-org.
+
+### 31.5 Separate management login (user request)
+- Backend `POST /auth/platform-login` — shared `_authenticate` helper (login refactored to use it; behaviour unchanged) then **requires `is_platform_admin`** (403 for non-management accounts). Tenant `/login` untouched.
+- Frontend `PlatformLogin.jsx` at public route **`/platform/login`** — distinct management-themed sign-in; on success routes to `/platform`; link back to the workspace login.
+- Re-audit → **RESULT 40/40** (adds: platform admin gets token, token carries the flag, non-management→403, wrong password→401, tenant `/login` still works after the refactor).
+
+---
+
+## 32. FEATURE — Stripe billing (subscriptions) — *planned, Phase 2*
+
+### 32.1 What
+Real subscriptions tied to `tenant.tier`/quotas: plans per tier, Stripe Checkout to subscribe an org, a **signature-verified** webhook syncing subscription state → tier/quota, the customer portal, and invoice history — surfaced in the Platform console.
+
+### 32.2 Design (outline)
+- Deps/config: `stripe` lib; `stripe_secret_key`, `stripe_webhook_secret`, per-tier `price_id`s (env).
+- Model: `Tenant.stripe_customer_id`, `stripe_subscription_id`, `subscription_status`, `current_period_end` (migration).
+- Endpoints: `POST /platform/orgs/{tid}/billing/checkout` (Checkout Session), `POST /billing/webhook` (Stripe-signature-verified; handles `checkout.session.completed`, `customer.subscription.updated|deleted`, `invoice.paid|payment_failed` → update tier/quota/status), `GET /platform/orgs/{tid}/billing` (status + invoices), customer-portal link.
+- Security: webhook signature MUST be verified; never trust client-supplied tier; idempotent event handling.
+- Verifiability: webhook signature + tier-mapping + quota-sync unit-tested with computed test signatures/stub events (no live Stripe); live Checkout needs test keys.
+
+### 32.3 Status
+- [ ] deferred until §31 is done + Stripe test keys available
+
+---
+
+## 33. FEATURE — Clinic vertical (reception / doctor / management + queue)
+
+A new **healthcare vertical** inside the existing multi-tenant app: each **clinic is a tenant** (created from the Platform Console). New roles **reception** and **doctor** (management = `org_admin`). Decisions locked: new vertical in this app · **live SSE push** for presence + "send patient in" · AI insights from **doctors' typed visit notes** (no audio/transcript).
+
+### 33.1 Roles & flows
+- **Reception:** doctor list (+ live status + next-available) · add patient (quick or full detail) · add patient to a doctor's **queue** · see scheduled **follow-ups** · manage the queue. Scope limited by management's assignment (a specific doctor, or open-for-all).
+- **Doctor:** sees ONLY their own patients/queue · add patient on the go · set **availability** (available/busy/away) · type **visit notes** → AI insights + schedule **follow-up** · **share** a patient with a teammate · **"send patient in"** notification to reception.
+- **Management (`org_admin`):** assign reception → specific doctor or open-for-all · see all patients + which doctor · doctor list · **analytics** + **AI insights**.
+
+### 33.2 Data model
+`clinic` domain in the registry. Roles `reception`, `doctor` added to `UserRole`. Tables:
+- `doctor_profiles` (user_id unique, specialty, status, room)
+- `patients` (tenant-scoped; name, phone, dob, details JSON, created_by)
+- `queue_entries` (patient→doctor, status waiting/in_progress/done/cancelled, priority, timestamps)
+- `follow_ups` (patient, doctor, scheduled_at, reason)
+- `reception_assignments` (reception_user → doctor_id | null = open)
+- `visits` (patient, doctor, notes EncryptedText, ai_insights JSON, created_at) — Phase 3
+- `clinic_notifications` (recipient, type, payload, read) — Phase 2
+
+### 33.3 Phasing
+- **P1 (foundation):** domain + roles + `require_reception`/`require_doctor`/`require_clinic_staff` · models doctor_profiles/patients/queue_entries/follow_ups/reception_assignments + migrations · REST endpoints for reception (patients, queue, doctor list, follow-ups), doctor (my queue, status, add patient, follow-up), management (doctors, assignments, all patients). Tenant-isolated, role-gated. **Audited.**
+- **P2 (real-time):** SSE presence + "send patient in" + queue-updated events; `clinic_notifications`.
+- **P3 (AI insights):** doctor visit notes → LLM insights (summary, symptoms, follow-up flags) via existing provider; management analytics.
+- **P4 (team sharing):** share/hand-off a patient to another doctor.
+- **P5 (frontend):** reception dashboard · doctor dashboard · management analytics.
+
+### 33.4 P1 acceptance criteria
+- New roles gate correctly: reception can't act as doctor and vice-versa; both are tenant-scoped; a doctor sees ONLY their own queue/patients.
+- Reception assignment enforced: a reception assigned to Dr X sees/queues only Dr X (open-for-all sees all).
+- Add patient + enqueue + advance queue (waiting→in_progress→done) works; positions/ordering correct.
+- Follow-ups list shows upcoming per clinic (reception) / per doctor (doctor).
+- Cross-tenant isolation on every entity; management sees all clinic patients + assignments.
+
+### 33.5 Status — P1 (foundation) — DONE
+- [x] `clinic` domain; roles `reception`/`doctor` (migration `0014`, `ALTER TYPE userrole ADD VALUE`); deps `require_reception`/`require_doctor`/`require_clinic_staff`
+- [x] models DoctorProfile/Patient/QueueEntry/FollowUp/ReceptionAssignment + migration `0015` (applied; enum types via idempotent DO-blocks)
+- [x] router `src/api/routers/clinic.py` (13 endpoints) + registered
+- [x] live audit → **RESULT 36/36**: RBAC gates; doctor setup (promote/409/404); status toggle; patients; **queue + assignment enforcement** (reception bound to assigned doctor, open=any, cross-tenant & non-doctor rejected); doctor queue + advance (ownership enforced, called_at/done_at); follow-ups (doctor-own vs clinic-wide, upcoming filter); assignments; tenant isolation
+
+**Endpoints:** `POST/GET /clinic/doctors` · `PATCH /clinic/me/status` · `POST/GET /clinic/patients` · `POST/GET /clinic/queue` · `GET /clinic/me/queue` · `PATCH /clinic/queue/{id}` · `POST/GET /clinic/follow-ups` · `GET /clinic/assignments` · `PUT /clinic/assignments/{reception_user_id}`
+
+### 33.6 P2 real-time (SSE) — DONE
+- [x] Redis pub/sub in cache (`publish_event` / `subscribe`, fail-open); `clinic_notifications` table + migration `0016`
+- [x] endpoints: `POST /clinic/send-patient-in` (doctor → notify assigned + open receptions), `GET /clinic/notifications`, `POST /clinic/notifications/{id}/read`, `GET /clinic/events` (SSE, audience-filtered)
+- [x] presence + queue-changed events published from `set_my_status` / `enqueue` / `update_queue_entry`
+- [x] live audit → **RESULT 19/19** (event-audience filter; pub/sub roundtrip; send-patient-in targeting; notification list/read + ownership 404; live presence broadcast received by a subscriber)
+
+### 33.7 P3 AI insights + analytics — DONE
+- [x] `clinic_visits` (notes `EncryptedText`, `ai_insights` JSON) + migration `0017`
+- [x] engine `src/clinic/insights.py::generate_insights` (bounded JSON call → summary/symptoms/possible_conditions/follow-up/red_flags; degrades to EMPTY on any malformed output — a visit always saves)
+- [x] endpoints: `POST /clinic/visits` (doctor; notes→insights), `GET /clinic/visits` (doctor-own vs management-all; `require_clinician` — reception excluded), `GET /clinic/analytics` (management: totals, per-doctor load, aggregated red flags + recent summaries, no raw notes)
+- [x] live audit → **RESULT 20/20** (determinism + 3 malformed→EMPTY; **real Groq** insights; notes ciphertext at rest; clinical RBAC; per-doctor analytics)
+
+### 33.8 P4 team sharing + hand-off — DONE
+- [x] `patient_shares` + migration `0018`; endpoints `POST/GET/DELETE /clinic/patients/{id}/share[s]` + `POST /clinic/queue/{id}/handoff`; shared doctors gain read access to a patient's visits; notifications + SSE on share/handoff
+- [x] live audit → **RESULT 16/16** (share + notify + shared-visit visibility; dedup 409 / self 400 / non-doctor 404 / unknown 404; list/unshare; hand-off reassign + re-queue + notify + ownership guards)
+
+**Clinic backend complete: P1 36 + P2 19 + P3 20 + P4 16 = 91/91.** 9 tables, roles, SSE, AI insights, team sharing.
+
+### 33.9 P5 frontend — DONE (static-audited; build-blocked env)
+- [x] `clinic` api client (23 methods) + `useClinicEvents` SSE hook (fetch + auth, auto-reconnect) + `ClinicShell` (header, live notification bell, sign-out)
+- [x] `ReceptionDashboard` (doctor cards w/ live status + waiting, add-patient→queue modal, queue, follow-ups), `DoctorDashboard` (availability toggle, send-patient-in, queue advance/handoff, visit modal → **live AI insights + red flags**, follow-up), `ManagementDashboard` (analytics stats, per-doctor table, reception assignments, add-doctor, recent AI insights)
+- [x] `ClinicHome` role-switch + full-screen `/clinic` route (own gate, no doc sidebar); `Login` redirects `domain==='clinic'` users to `/clinic`
+- [x] static-audit: all files brace-balanced, icons valid (incl. legacy `Loader2`/`AlertTriangle`), no apostrophe traps, no IDA
+
+**§33 Clinic vertical COMPLETE** — backend P1-P4 (91/91 live-audited) + P5 frontend (static-audited). Roles reception/doctor/management, 9 tables, live SSE, encrypted visit notes → AI insights, team sharing, 3 dashboards.
+
+---
+
+## 15. FEATURE — Production-grade uploads (direct-to-MinIO)
+
+### 15.1 What & why
+The old path streamed the whole file **through the API** (`UploadFile` → `read()` → 100 MB cap → server memory). Production path: the bytes go **browser → MinIO directly** via presigned URLs (S3 multipart for large files); the API only signs + verifies + enqueues. Removes the server bottleneck, enables large/resumable uploads, and decouples upload from processing.
+
+### 15.2 Components (all done, audited)
+- **ObjectStore** (`src/storage/object.py`): `presigned_upload_url`, `create_multipart_upload`, `presigned_upload_part_url`, `complete_multipart_upload`, `abort_multipart_upload`, `head_object`, `read_range`.
+- **Endpoints** (`documents.py`): `POST /documents/upload-init` (validate ext+quota → create row → presigned URL or multipart id) · `POST /{id}/multipart/sign-part` · `POST /{id}/multipart/abort` · `POST /{id}/complete` (verify object, **content-scan**, record size+ETag, **dedup by ETag**, enqueue async processing). Legacy `/upload` kept for back-compat.
+- **Content scan** (`src/ingestion/content_scan.content_matches`): magic-byte sniff on `complete` → disguised files → `rejected_security` (422). ClamAV = documented production hook.
+- **Frontend** (`api/index.js` `documents.upload`): direct presigned PUT for small files, S3 multipart (8 MB parts) for large — same call signature; build-verified.
+
+### 15.3 Acceptance & audit — 13/13 on live MinIO
+Single-part (init→presigned PUT→complete, size+ETag recorded, object in MinIO), content-scan rejection (PNG-as-.pdf → 422 `rejected_security`), multipart (init→sign-part→PUT→complete), cross-tenant complete blocked (404), bad extension rejected at init, dedup by ETag.
+
+### 15.4 Deployment notes
+- **MinIO CORS** must allow the frontend origin for browser PUT, and **expose the `ETag` header** for multipart (single-part doesn't need it — the server reads ETag via `head_object`).
+- ClamAV: set `CLAMAV_ENABLED` + run `clamd` to activate real malware scanning (hook already in place).
+
+---
+
 ## 6. Features 5–7 — specs to be expanded when reached
 Each remaining feature gets a §-section like Feature 1 (components / acceptance / audit) at the moment we start it, so specs stay honest to the code that exists then rather than guessed up front.

@@ -71,7 +71,14 @@ return current
         return current <= max_count, current
 
     async def get_rate_limit_count(self, key: str) -> int:
-        val = await self._r.get(key)
+        """Current counter value, or 0 if unset. Fails SAFE (returns 0) on a Redis
+        outage so read paths that surface usage (e.g. the platform console) degrade
+        rather than 500."""
+        try:
+            val = await self._r.get(key)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("get_rate_limit_count failing safe (Redis unavailable): %s", exc)
+            return 0
         return int(val) if val else 0
 
     # ── Demo quota — fast counter in Redis, Postgres is source of truth ───────
@@ -172,6 +179,35 @@ return 0
             return int(await self._r.zcard(f"conc:{tenant_id}"))
         except Exception:  # noqa: BLE001
             return 0
+
+    # ── Pub/sub for live events (clinic SSE, §33 P2) ─────────────────────────
+
+    async def publish_event(self, channel: str, event: dict) -> None:
+        """Publish a JSON event to a channel. Fails open (best-effort) so a Redis
+        hiccup never breaks the mutating request that triggered the broadcast."""
+        try:
+            await self._r.publish(channel, json.dumps(event))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("publish_event failed (Redis unavailable): %s", exc)
+
+    async def subscribe(self, channel: str):
+        """Async generator yielding decoded event dicts published to ``channel``.
+        Used by SSE endpoints; the caller closes the generator to unsubscribe."""
+        pubsub = self._r.pubsub()
+        await pubsub.subscribe(channel)
+        try:
+            async for msg in pubsub.listen():
+                if msg.get("type") == "message":
+                    try:
+                        yield json.loads(msg["data"])
+                    except Exception:  # noqa: BLE001 — skip a malformed message
+                        continue
+        finally:
+            try:
+                await pubsub.unsubscribe(channel)
+                await pubsub.aclose()
+            except Exception:  # noqa: BLE001
+                pass
 
     # ── JWT revocation denylist (G14) ────────────────────────────────────────
 

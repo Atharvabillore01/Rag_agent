@@ -45,15 +45,17 @@ async def main():
             hashed_password=hash_password(ADMIN_PASSWORD),
             role=UserRole.org_admin,
             is_active=True,
+            is_platform_admin=True,  # first admin is the platform owner (§31)
         )
         db.add(admin)
         await db.commit()
 
     print(f"Created tenant: {TENANT_NAME!r} (id={tenant.id})")
-    print(f"Created admin:  {ADMIN_EMAIL!r}")
+    print(f"Created admin:  {ADMIN_EMAIL!r}  (platform admin)")
     print(f"Password:        {ADMIN_PASSWORD!r}")
     print()
     print("Next: POST /auth/login  with those credentials to get a JWT token.")
+    print("This user can manage all organizations via /platform/*.")
 
 
 if __name__ == "__main__":

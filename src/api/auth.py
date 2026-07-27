@@ -115,10 +115,24 @@ async def get_current_user(
         if await get_cache().is_jti_revoked(jti):
             raise credentials_exception
 
-    result = await db.execute(select(User).where(User.id == user_id, User.is_active.is_(True)))
-    user = result.scalar_one_or_none()
-    if not user:
+    # Fetch the user AND the tenant's active flag in ONE query (avoids a second
+    # round-trip per request). A suspended organization (tenant.is_active=False)
+    # locks out all its users — what the platform admin's suspend action enforces
+    # (§31) — but platform admins are exempt so they can never lock themselves out.
+    from src.db.models import Tenant
+    row = (await db.execute(
+        select(User, Tenant.is_active)
+        .join(Tenant, User.tenant_id == Tenant.id)
+        .where(User.id == user_id, User.is_active.is_(True))
+    )).first()
+    if row is None:
         raise credentials_exception
+    user, tenant_active = row
+    if not user.is_platform_admin and not tenant_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This organization is suspended. Contact your administrator.",
+        )
     return user
 
 
@@ -138,3 +152,22 @@ def require_role(*roles: UserRole):
 require_admin = require_role(UserRole.org_admin)
 require_editor = require_role(UserRole.org_admin, UserRole.editor)
 require_viewer = require_role(UserRole.org_admin, UserRole.editor, UserRole.viewer, UserRole.demo)
+
+# Clinic vertical (§33). Reception tasks are allowed to management (org_admin) too;
+# doctor endpoints are doctor-only (a doctor sees only their own patients).
+require_reception = require_role(UserRole.reception, UserRole.org_admin)
+require_doctor = require_role(UserRole.doctor)
+require_clinic_staff = require_role(UserRole.reception, UserRole.doctor, UserRole.org_admin)
+# Clinical data (visit notes + AI insights) — doctor + management only, NOT reception.
+require_clinician = require_role(UserRole.doctor, UserRole.org_admin)
+
+
+async def require_platform_admin(user: User = Depends(get_current_user)) -> User:
+    """Cross-tenant super-admin gate (feature-implementation-plan §31). Distinct
+    from the org-scoped role checks — a platform admin manages ALL organizations."""
+    if not getattr(user, "is_platform_admin", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Platform administrator privilege required.",
+        )
+    return user

@@ -30,7 +30,9 @@ export default function Login() {
     try {
       const res = await authApi.login(email, password)
       login(res.access_token)
-      navigate('/chat')
+      // Clinic-vertical users land in the full-screen clinic area, not the doc app.
+      const u = useAuthStore.getState().user
+      navigate(u?.domain === 'clinic' ? '/clinic' : '/chat')
     } catch (err) {
       setError(err.message || 'Invalid credentials. Please try again.')
     } finally {

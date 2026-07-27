@@ -30,9 +30,9 @@ _bearer = HTTPBearer()
 
 
 def _registration_allowed(email: str) -> bool:
-    """G5: self-serve registration is gated. Open only if explicitly enabled, or
-    if the email's domain is on the allowlist."""
-    if settings.allow_open_registration:
+    """G5: self-serve registration is gated. Open in local dev (debug) or when
+    explicitly enabled, or if the email's domain is on the allowlist."""
+    if settings.debug or settings.allow_open_registration:
         return True
     allowed = [d.strip().lower() for d in (settings.registration_allowed_domains or [])]
     if not allowed:
@@ -108,8 +108,10 @@ async def register(body: RegisterRequest, request: Request, db: AsyncSession = D
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    existing = await db.execute(select(User).where(User.email == body.email))
-    if existing.scalar_one_or_none():
+    # .first() (not scalar_one_or_none) so a pre-existing cross-tenant duplicate
+    # email can never turn this into a 500 (see login note below).
+    existing = await db.execute(select(User).where(User.email == body.email).limit(1))
+    if existing.scalars().first():
         raise HTTPException(status_code=400, detail="Email already registered")
 
     # Normalize case ("Legal" -> "legal") but reject genuinely unknown domains so
@@ -155,17 +157,24 @@ async def register(body: RegisterRequest, request: Request, db: AsyncSession = D
         "role": user.role.value,
         "email": user.email,
         "domain": tenant.domain,
+        "is_platform_admin": user.is_platform_admin,
     })
     return TokenResponse(access_token=token)
 
 
-@router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
-    await _throttle_auth(request, "login")
+async def _authenticate(body: LoginRequest, request: Request, db: AsyncSession, *, action: str) -> User:
+    """Shared credential + MFA check for the login endpoints. Raises 401 on failure;
+    on success writes the login audit row and returns the authenticated user."""
+    await _throttle_auth(request, action)
+    # Emails are meant to be globally unique (enforced at every creation path), but
+    # use .first() (deterministic by id) rather than scalar_one_or_none so that even
+    # if a duplicate ever slips in, login degrades gracefully instead of 500-ing —
+    # a suspended-account/DoS hazard flagged in review.
     result = await db.execute(
         select(User).where(User.email == body.email, User.is_active.is_(True))
+        .order_by(User.created_at).limit(1)
     )
-    user = result.scalar_one_or_none()
+    user = result.scalars().first()
 
     if not user or not user.hashed_password or not verify_password(body.password, user.hashed_password):
         # G6: audit a wrong-password attempt on a real account (brute-force signal).
@@ -173,17 +182,11 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
         # and not confirming existence avoids account enumeration.
         if user:
             db.add(AuditLog(
-                tenant_id=user.tenant_id,
-                user_id=user.id,
-                action="user_login_failed",
-                resource_type="session",
-                log_metadata={"email": user.email},
+                tenant_id=user.tenant_id, user_id=user.id, action="user_login_failed",
+                resource_type="session", log_metadata={"email": user.email},
             ))
             await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     # G10: second factor. Password is correct; if MFA is on, a valid TOTP code
     # is also required. A distinct 401 detail lets the client prompt for the code.
@@ -200,25 +203,49 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
 
     user.last_login_at = datetime.now(timezone.utc)
     db.add(AuditLog(
-        tenant_id=user.tenant_id,
-        user_id=user.id,
-        action="user_login",
-        resource_type="session",
-        log_metadata={"email": user.email},
+        tenant_id=user.tenant_id, user_id=user.id, action="user_login",
+        resource_type="session", log_metadata={"email": user.email},
     ))
     await db.commit()
+    return user
 
-    # Carry the tenant's domain in the token so the client can theme/route by
-    # vertical. Fall back to the default if the tenant row is somehow missing.
-    tenant = await db.get(Tenant, user.tenant_id)
-    token = create_access_token({
+
+def _login_token(user: User, tenant: Tenant | None) -> str:
+    # Carry the tenant's domain so the client can theme/route by vertical; fall back
+    # to the default if the tenant row is somehow missing. is_platform_admin is for
+    # UI gating only — the server always re-checks the DB flag.
+    return create_access_token({
         "sub": str(user.id),
         "tenant_id": str(user.tenant_id),
         "role": user.role.value,
         "email": user.email,
         "domain": tenant.domain if tenant else DEFAULT_DOMAIN,
+        "is_platform_admin": user.is_platform_admin,
     })
-    return TokenResponse(access_token=token)
+
+
+@router.post("/login", response_model=TokenResponse)
+async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    """Tenant login — any active user of an active organization."""
+    user = await _authenticate(body, request, db, action="login")
+    tenant = await db.get(Tenant, user.tenant_id)
+    return TokenResponse(access_token=_login_token(user, tenant))
+
+
+@router.post("/platform-login", response_model=TokenResponse)
+async def platform_login(body: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    """Management (platform-admin) login — a SEPARATE entry point that rejects
+    non-management accounts (403), so tenant users can't authenticate via the
+    management door. Authorization is still re-checked server-side on every
+    /platform call; this endpoint just fails fast for the wrong audience."""
+    user = await _authenticate(body, request, db, action="platform-login")
+    if not user.is_platform_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is not a management account.",
+        )
+    tenant = await db.get(Tenant, user.tenant_id)
+    return TokenResponse(access_token=_login_token(user, tenant))
 
 
 @router.post("/logout", status_code=204)

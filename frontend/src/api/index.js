@@ -79,7 +79,8 @@ export async function transcribeAudio(blob, filename = 'recording.webm') {
 }
 
 export const auth = {
-  login:    (email, password) => request('POST', '/auth/login',    { email, password }),
+  login:         (email, password) => request('POST', '/auth/login',    { email, password }),
+  platformLogin: (email, password) => request('POST', '/auth/platform-login', { email, password }),
   register: (email, password, tenant_name) => request('POST', '/auth/register', { email, password, tenant_name }),
   logout:   () => request('POST', '/auth/logout'),   // G14: server-side token revocation
 }
@@ -91,19 +92,50 @@ export const documents = {
   viewUrl: (id)                   => request('GET', `/documents/${id}/view-url`),
   move:    (id, folder_id)        => request('PATCH', `/documents/${id}/folder`, { folder_id }),
   delete:  (id)                   => request('DELETE', `/documents/${id}`),
-  upload: async (file) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    const res = await fetch(`${BASE}/documents/upload`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${getToken()}` },
-      body: fd,
+  // Direct-to-MinIO upload: the file bytes go browser -> object storage via a
+  // presigned URL (or S3 multipart for large files); the API only signs + verifies.
+  // Same signature as before, plus optional onProgress(fraction 0..1).
+  upload: async (file, onProgress) => {
+    const MULTIPART_THRESHOLD = 8 * 1024 * 1024   // 8 MB
+    const PART_SIZE = 8 * 1024 * 1024
+    const contentType = file.type || 'application/octet-stream'
+
+    const init = await request('POST', '/documents/upload-init', {
+      filename: file.name,
+      content_type: contentType,
+      multipart: file.size > MULTIPART_THRESHOLD,
     })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: res.statusText }))
-      throw new Error(err.detail || 'Upload failed')
+
+    if (init.method === 'single') {
+      const put = await fetch(init.upload_url, {
+        method: 'PUT', headers: { 'Content-Type': contentType }, body: file,
+      })
+      if (!put.ok) throw new Error('Upload to storage failed')
+      onProgress?.(1)
+      return request('POST', `/documents/${init.document_id}/complete`, {})
     }
-    return res.json()
+
+    // Multipart: slice, sign each part, PUT direct, then complete.
+    const parts = []
+    const total = Math.ceil(file.size / PART_SIZE)
+    for (let i = 0; i < total; i++) {
+      const partNumber = i + 1
+      const blob = file.slice(i * PART_SIZE, Math.min(file.size, (i + 1) * PART_SIZE))
+      const { url } = await request('POST', `/documents/${init.document_id}/multipart/sign-part`,
+        { upload_id: init.upload_id, part_number: partNumber })
+      const put = await fetch(url, { method: 'PUT', headers: { 'Content-Type': contentType }, body: blob })
+      if (!put.ok) {
+        await request('POST', `/documents/${init.document_id}/multipart/abort`,
+          { upload_id: init.upload_id }).catch(() => {})
+        throw new Error(`Upload failed on part ${partNumber}`)
+      }
+      // Requires MinIO/S3 CORS to expose the ETag header to the browser.
+      const etag = put.headers.get('ETag') || put.headers.get('etag')
+      parts.push({ PartNumber: partNumber, ETag: etag })
+      onProgress?.(partNumber / total)
+    }
+    return request('POST', `/documents/${init.document_id}/complete`,
+      { upload_id: init.upload_id, parts })
   },
   // Live ingestion progress via Server-Sent Events. Yields {event_type, status, ...}.
   // Uses fetch (not EventSource) so the Authorization header can be sent.
@@ -207,6 +239,46 @@ export const folders = {
 export const skills = {
   // Pre-built, domain-scoped workflow templates for the caller's tenant.
   list: () => request('GET', '/skills/'),
+}
+
+// Platform (super-admin) console — cross-tenant management. Requires a
+// platform-admin token; the server enforces via require_platform_admin.
+export const platform = {
+  listOrgs:     ()              => request('GET',   '/platform/orgs'),
+  getOrg:       (id)            => request('GET',   `/platform/orgs/${id}`),
+  createOrg:    (data)          => request('POST',  '/platform/orgs', data),
+  updateOrg:    (id, data)      => request('PATCH', `/platform/orgs/${id}`, data),
+  addMember:    (id, data)      => request('POST',  `/platform/orgs/${id}/members`, data),
+  updateMember: (id, uid, data) => request('PATCH', `/platform/orgs/${id}/members/${uid}`, data),
+  moveMember:   (id, uid, data) => request('POST',  `/platform/orgs/${id}/members/${uid}/move`, data),
+  getRateLimit: (id)            => request('GET',   `/platform/orgs/${id}/rate-limit`),
+  setRateLimit: (id, data)      => request('PUT',   `/platform/orgs/${id}/rate-limit`, data),
+}
+
+export const clinic = {
+  doctors:        ()               => request('GET',    '/clinic/doctors'),
+  createDoctor:   (data)           => request('POST',   '/clinic/doctors', data),
+  setStatus:      (status)         => request('PATCH',  '/clinic/me/status', { status }),
+  listPatients:   (search = '')    => request('GET',    `/clinic/patients?search=${encodeURIComponent(search)}`),
+  createPatient:  (data)           => request('POST',   '/clinic/patients', data),
+  enqueue:        (data)           => request('POST',   '/clinic/queue', data),
+  queue:          (doctorId = '')  => request('GET',    `/clinic/queue${doctorId ? `?doctor_user_id=${doctorId}` : ''}`),
+  myQueue:        ()               => request('GET',    '/clinic/me/queue'),
+  updateQueue:    (id, status)     => request('PATCH',  `/clinic/queue/${id}`, { status }),
+  handoff:        (id, doctor_user_id) => request('POST', `/clinic/queue/${id}/handoff`, { doctor_user_id }),
+  followUps:      ()               => request('GET',    '/clinic/follow-ups'),
+  createFollowUp: (data)           => request('POST',   '/clinic/follow-ups', data),
+  assignments:    ()               => request('GET',    '/clinic/assignments'),
+  setAssignment:  (rid, doctor_user_id) => request('PUT', `/clinic/assignments/${rid}`, { doctor_user_id }),
+  sendPatientIn:  (data = {})      => request('POST',   '/clinic/send-patient-in', data),
+  notifications:  ()               => request('GET',    '/clinic/notifications'),
+  markRead:       (id)             => request('POST',   `/clinic/notifications/${id}/read`),
+  createVisit:    (data)           => request('POST',   '/clinic/visits', data),
+  visits:         (patientId = '') => request('GET',    `/clinic/visits${patientId ? `?patient_id=${patientId}` : ''}`),
+  analytics:      ()               => request('GET',    '/clinic/analytics'),
+  sharePatient:   (pid, doctor_user_id) => request('POST', `/clinic/patients/${pid}/share`, { doctor_user_id }),
+  shares:         (pid)            => request('GET',    `/clinic/patients/${pid}/shares`),
+  unshare:        (pid, did)       => request('DELETE', `/clinic/patients/${pid}/shares/${did}`),
 }
 
 export const admin = {

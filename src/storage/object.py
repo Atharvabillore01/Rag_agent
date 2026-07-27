@@ -86,6 +86,55 @@ class ObjectStore:
             ExpiresIn=expires_in,
         )
 
+    # ── Direct-to-storage uploads (client → MinIO, bypassing the API) ──────────
+
+    def presigned_upload_url(self, key: str, content_type: str = "application/octet-stream", expires_in: int = 3600) -> str:
+        """Presigned PUT URL for a single-shot direct upload."""
+        return self._client.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": self._bucket, "Key": key, "ContentType": content_type},
+            ExpiresIn=expires_in,
+        )
+
+    def create_multipart_upload(self, key: str, content_type: str = "application/octet-stream") -> str:
+        resp = self._client.create_multipart_upload(Bucket=self._bucket, Key=key, ContentType=content_type)
+        return resp["UploadId"]
+
+    def presigned_upload_part_url(self, key: str, upload_id: str, part_number: int, expires_in: int = 3600) -> str:
+        return self._client.generate_presigned_url(
+            "upload_part",
+            Params={"Bucket": self._bucket, "Key": key, "UploadId": upload_id, "PartNumber": part_number},
+            ExpiresIn=expires_in,
+        )
+
+    def complete_multipart_upload(self, key: str, upload_id: str, parts: list[dict]) -> str:
+        """parts: [{"PartNumber": int, "ETag": str}]. Returns the final object ETag."""
+        norm = sorted(
+            ({"PartNumber": int(p["PartNumber"]), "ETag": p["ETag"]} for p in parts),
+            key=lambda p: p["PartNumber"],
+        )
+        resp = self._client.complete_multipart_upload(
+            Bucket=self._bucket, Key=key, UploadId=upload_id, MultipartUpload={"Parts": norm}
+        )
+        return (resp.get("ETag") or "").strip('"')
+
+    def abort_multipart_upload(self, key: str, upload_id: str) -> None:
+        self._client.abort_multipart_upload(Bucket=self._bucket, Key=key, UploadId=upload_id)
+
+    def head_object(self, key: str) -> dict:
+        """Return {'size', 'etag', 'content_type'} — raises ClientError if absent."""
+        resp = self._client.head_object(Bucket=self._bucket, Key=key)
+        return {
+            "size": resp["ContentLength"],
+            "etag": (resp.get("ETag") or "").strip('"'),
+            "content_type": resp.get("ContentType"),
+        }
+
+    def read_range(self, key: str, length: int) -> bytes:
+        """Read the first `length` bytes of an object (for content sniffing)."""
+        resp = self._client.get_object(Bucket=self._bucket, Key=key, Range=f"bytes=0-{max(0, length - 1)}")
+        return resp["Body"].read()
+
     @staticmethod
     def document_key(tenant_id: str, document_id: str, filename: str) -> str:
         return f"raw/{tenant_id}/{document_id}/{filename}"

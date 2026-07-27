@@ -16,6 +16,9 @@ import PlaybookReview from './pages/PlaybookReview'
 import Drafting      from './pages/Drafting'
 import Admin         from './pages/Admin'
 import Observability from './pages/Observability'
+import PlatformConsole from './pages/PlatformConsole'
+import PlatformLogin  from './pages/PlatformLogin'
+import ClinicHome     from './pages/ClinicHome'
 
 export default function App() {
   return (
@@ -23,7 +26,10 @@ export default function App() {
       <AnimatePresence mode="wait">
         <Routes>
           <Route path="/login"    element={<Login />} />
+          <Route path="/platform/login" element={<PlatformLogin />} />
           <Route path="/register" element={<Register />} />
+          {/* Full-screen clinic area (its own gate + layout, no document sidebar) */}
+          <Route path="/clinic" element={<ClinicHome />} />
           <Route element={<ProtectedRoute />}>
             <Route path="/"          element={<Navigate to="/chat" replace />} />
             <Route path="/chat"      element={<Chat />} />
@@ -39,6 +45,7 @@ export default function App() {
             <Route path="/drafting"      element={<Drafting />} />
             <Route path="/admin"         element={<Admin />} />
             <Route path="/observability" element={<Observability />} />
+            <Route path="/platform"      element={<PlatformConsole />} />
           </Route>
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>

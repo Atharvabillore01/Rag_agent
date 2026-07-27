@@ -2,7 +2,7 @@ import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   FileText, Settings, LogOut, ChevronRight,
-  Plus, Trash2, MessagesSquare, X, Activity, Table2, GitCompareArrows, Languages, CalendarClock, PenLine, Scale, ShieldAlert, Gavel, ClipboardCheck,
+  Plus, Trash2, MessagesSquare, X, Activity, Table2, GitCompareArrows, Languages, CalendarClock, PenLine, Scale, ShieldAlert, Gavel, ClipboardCheck, Building2,
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import { useChatStore } from '../stores/chatStore'
@@ -38,6 +38,7 @@ export default function Sidebar({ onClose }) {
   const sessions = sortedSessions()
 
   const isAdmin  = user?.role === 'org_admin'
+  const isPlatformAdmin = user?.is_platform_admin === true
   const initials = user?.email ? user.email.slice(0, 2).toUpperCase() : 'U'
 
   async function handleLogout() {
@@ -204,6 +205,38 @@ export default function Sidebar({ onClose }) {
                   )}
                 </NavLink>
               ))}
+            </div>
+          )}
+
+          {/* Platform (super-admin) — cross-tenant management */}
+          {isPlatformAdmin && (
+            <div>
+              <p className="px-2 mb-1.5 mt-2 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
+                Platform
+              </p>
+              <NavLink to="/platform" onClick={() => onClose?.()}>
+                {({ isActive }) => (
+                  <motion.div
+                    whileHover={{ x: 2 }}
+                    transition={{ duration: 0.12 }}
+                    className="flex items-center gap-3 px-2.5 py-2.5 rounded-xl mb-0.5 cursor-pointer transition-all"
+                    style={{
+                      background: isActive ? '#eff6ff' : 'transparent',
+                      color: isActive ? '#1d4ed8' : '#475569',
+                    }}
+                  >
+                    <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                         style={{ background: isActive ? '#dbeafe' : '#f1f5f9' }}>
+                      <Building2 size={15} style={{ color: isActive ? '#1d4ed8' : '#64748b' }} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate leading-none mb-0.5">Platform Console</p>
+                      <p className="text-[11px] truncate text-slate-400">All organizations</p>
+                    </div>
+                    {isActive && <ChevronRight size={13} className="text-blue-500 opacity-60" />}
+                  </motion.div>
+                )}
+              </NavLink>
             </div>
           )}
         </div>

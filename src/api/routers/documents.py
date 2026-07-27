@@ -7,7 +7,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -207,6 +207,225 @@ async def upload_document(
         filename=filename,
         message="Document uploaded and queued for processing.",
     )
+
+
+# ── Direct-to-storage upload (client → MinIO; presigned + multipart) ──────────
+# Production path: the API never buffers the file. init issues a presigned URL (or
+# multipart credentials); the client uploads straight to MinIO; complete verifies
+# the object, content-scans it, records size/hash, and enqueues async processing.
+
+class UploadInitRequest(BaseModel):
+    filename: str = Field(min_length=1, max_length=512)
+    content_type: str | None = None
+    multipart: bool = False
+
+
+class UploadInitResponse(BaseModel):
+    document_id: str
+    storage_key: str
+    method: str                      # "single" | "multipart"
+    upload_url: str | None = None    # single-part presigned PUT
+    upload_id: str | None = None     # multipart upload id
+
+
+class SignPartRequest(BaseModel):
+    upload_id: str
+    part_number: int = Field(ge=1, le=10000)
+
+
+class SignPartResponse(BaseModel):
+    url: str
+
+
+class CompleteUploadRequest(BaseModel):
+    upload_id: str | None = None
+    parts: list[dict] | None = None  # [{"PartNumber": int, "ETag": str}] for multipart
+
+
+class AbortUploadRequest(BaseModel):
+    upload_id: str
+
+
+async def _ensure_quota(db: AsyncSession, tenant_id: str) -> None:
+    row = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    tenant = row.scalar_one_or_none()
+    if tenant:
+        count = (await db.execute(
+            select(func.count()).select_from(Document).where(Document.tenant_id == tenant_id)
+        )).scalar_one()
+        if count >= tenant.quota_documents:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Document quota reached ({tenant.quota_documents} documents).",
+            )
+
+
+def _enqueue_ingestion(document_id: str, tenant_id: str, storage_key: str, file_type: str,
+                       collection_tags, role: str) -> None:
+    from src.ingestion.worker import run_ingestion_pipeline
+    queue = settings.ingestion_demo_queue if role == "demo" else settings.ingestion_fast_queue
+    run_ingestion_pipeline.apply_async(
+        kwargs={
+            "document_id": document_id, "tenant_id": tenant_id, "storage_path": storage_key,
+            "file_type": file_type, "ingestion_version": 1, "collection_tags": collection_tags,
+        },
+        queue=queue,
+    )
+
+
+async def _owned_pending_doc(db: AsyncSession, tenant_id: str, document_id: str) -> Document:
+    doc = (await db.execute(
+        select(Document).where(Document.id == document_id, Document.tenant_id == tenant_id)
+    )).scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return doc
+
+
+@router.post("/upload-init", response_model=UploadInitResponse, status_code=201)
+async def upload_init(
+    body: UploadInitRequest,
+    current_user: User = Depends(require_editor),
+    db: AsyncSession = Depends(get_db),
+    object_store: ObjectStore = Depends(get_object_store_dep),
+):
+    ext = "." + body.filename.rsplit(".", 1)[-1].lower() if "." in body.filename else ""
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"File type {ext!r} not supported")
+    await _ensure_quota(db, current_user.tenant_id)
+
+    document_id = str(uuid.uuid4())
+    file_type = detect_file_type(body.filename, body.content_type)
+    storage_key = ObjectStore.document_key(current_user.tenant_id, document_id, body.filename)
+    ctype = body.content_type or "application/octet-stream"
+
+    # Row is created up front (status=uploaded) with a placeholder hash; /complete
+    # fills in size + real hash once the bytes are in storage.
+    db.add(Document(
+        id=document_id,
+        tenant_id=current_user.tenant_id,
+        uploaded_by=current_user.id,
+        filename=body.filename,
+        file_type=file_type,
+        storage_path=storage_key,
+        content_hash=f"pending-{document_id}",
+        status=DocumentStatus.uploaded,
+    ))
+    await db.commit()
+
+    loop = asyncio.get_running_loop()
+    if body.multipart:
+        upload_id = await loop.run_in_executor(
+            None, lambda: object_store.create_multipart_upload(storage_key, ctype)
+        )
+        return UploadInitResponse(document_id=document_id, storage_key=storage_key,
+                                  method="multipart", upload_id=upload_id)
+    url = await loop.run_in_executor(
+        None, lambda: object_store.presigned_upload_url(storage_key, ctype)
+    )
+    return UploadInitResponse(document_id=document_id, storage_key=storage_key,
+                              method="single", upload_url=url)
+
+
+@router.post("/{document_id}/multipart/sign-part", response_model=SignPartResponse)
+async def sign_part(
+    document_id: str,
+    body: SignPartRequest,
+    current_user: User = Depends(require_editor),
+    db: AsyncSession = Depends(get_db),
+    object_store: ObjectStore = Depends(get_object_store_dep),
+):
+    doc = await _owned_pending_doc(db, current_user.tenant_id, document_id)
+    loop = asyncio.get_running_loop()
+    url = await loop.run_in_executor(
+        None, lambda: object_store.presigned_upload_part_url(doc.storage_path, body.upload_id, body.part_number)
+    )
+    return SignPartResponse(url=url)
+
+
+@router.post("/{document_id}/multipart/abort", status_code=204)
+async def abort_upload(
+    document_id: str,
+    body: AbortUploadRequest,
+    current_user: User = Depends(require_editor),
+    db: AsyncSession = Depends(get_db),
+    object_store: ObjectStore = Depends(get_object_store_dep),
+):
+    doc = await _owned_pending_doc(db, current_user.tenant_id, document_id)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, lambda: object_store.abort_multipart_upload(doc.storage_path, body.upload_id))
+    await db.delete(doc)
+    await db.commit()
+
+
+@router.post("/{document_id}/complete", response_model=DocumentResponse)
+async def complete_upload(
+    document_id: str,
+    body: CompleteUploadRequest,
+    request: Request,
+    current_user: User = Depends(require_editor),
+    db: AsyncSession = Depends(get_db),
+    object_store: ObjectStore = Depends(get_object_store_dep),
+):
+    doc = await _owned_pending_doc(db, current_user.tenant_id, document_id)
+    loop = asyncio.get_running_loop()
+
+    # Finalize a multipart upload if the client used one.
+    if body.upload_id and body.parts:
+        await loop.run_in_executor(
+            None, lambda: object_store.complete_multipart_upload(doc.storage_path, body.upload_id, body.parts)
+        )
+
+    # Verify the object actually landed in storage + get its size.
+    try:
+        head = await loop.run_in_executor(None, lambda: object_store.head_object(doc.storage_path))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Upload not found in storage — finish uploading before completing.")
+
+    # Content scan: reject a payload whose magic bytes don't match the extension.
+    head_bytes = await loop.run_in_executor(None, lambda: object_store.read_range(doc.storage_path, 512))
+    ok, sniffed = content_matches(head_bytes, doc.file_type)
+    if not ok:
+        doc.status = DocumentStatus.rejected_security
+        doc.failure_reason = f"content scan: sniffed {sniffed!r} does not match declared {doc.file_type}"
+        await loop.run_in_executor(None, lambda: object_store.delete(doc.storage_path))
+        await db.commit()
+        raise HTTPException(status_code=422, detail=f"File rejected — content ({sniffed}) does not match a {doc.file_type}.")
+
+    # Deduplicate by ETag (single-part ETag == MD5 of content).
+    etag = head["etag"]
+    if etag:
+        dup = (await db.execute(
+            select(Document).where(
+                Document.tenant_id == current_user.tenant_id,
+                Document.content_hash == etag,
+                Document.id != document_id,
+            )
+        )).scalar_one_or_none()
+        if dup:
+            await loop.run_in_executor(None, lambda: object_store.delete(doc.storage_path))
+            await db.delete(doc)
+            await db.commit()
+            return DocumentResponse(document_id=dup.id, status=dup.status.value,
+                                    filename=dup.filename, message="Duplicate document — already uploaded.")
+
+    doc.content_hash = etag or f"nohash-{document_id}"
+    doc.file_size_bytes = head["size"]
+    db.add(AuditLog(
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.id,
+        action="document_upload",
+        resource_type="document",
+        resource_id=document_id,
+        log_metadata={"filename": doc.filename, "file_type": doc.file_type,
+                      "size": head["size"], "direct": True, **_req_meta(request)},
+    ))
+    await db.commit()
+
+    _enqueue_ingestion(document_id, current_user.tenant_id, doc.storage_path, doc.file_type,
+                       current_user.collection_tags, current_user.role.value)
+    return DocumentResponse(document_id=document_id, status=DocumentStatus.uploaded.value,
+                            filename=doc.filename, message="Upload complete; queued for processing.")
 
 
 @router.get("/", response_model=list[DocumentListItem])

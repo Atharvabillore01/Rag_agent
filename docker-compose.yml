@@ -58,6 +58,40 @@ services:
       timeout: 10s
       retries: 5
 
+  # ── Celery ingestion worker ──────────────────────────────────────────────
+  # Runs in Docker while the API + frontend run on the host. Inherits secrets/
+  # keys from .env, but OVERRIDES the infra URLs to the compose service names
+  # (the host .env points at localhost:published-ports; the worker must use the
+  # Docker network hostnames instead).
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://rag:rag@postgres:5432/ragdb
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      S3_ENDPOINT_URL: http://minio:9000
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    volumes:
+      - ./src:/app/src          # live code — no rebuild on source changes
+    command: >
+      celery -A src.ingestion.worker.celery_app worker
+      -Q ingestion.fast,ingestion.demo,celery --loglevel=info
+
   # ── React frontend (Vite dev server) ─────────────────────────────────────
   frontend:
     build:

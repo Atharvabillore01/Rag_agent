@@ -67,7 +67,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not (is_upload or is_metered):
             return await call_next(request)
 
-        tenant_id = self._extract_tenant_id(request)
+        tenant_id, role = self._extract_claims(request)
         if not tenant_id:
             # No valid token -> let the endpoint's auth dependency reject it (401),
             # and never attribute usage to a tenant we can't identify.
@@ -89,30 +89,44 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             response.headers["X-RateLimit-Remaining"] = str(max(0, limits.ingestion_per_hour - count))
             return response
 
-        # metered LLM POST -> QPM budget
-        key = f"rl:qpm:{tenant_id}:{int(time.time() // 60)}"
-        allowed, count = await cache.rate_limit_check(key, limits.qpm, window_seconds=60)
-        if not allowed:
+        # metered LLM POST -> QPM (per-minute burst) + QPD (per-day) budgets.
+        minute_key = f"rl:qpm:{tenant_id}:{int(time.time() // 60)}"
+        allowed_m, count_m = await cache.rate_limit_check(minute_key, limits.qpm, window_seconds=60)
+        if not allowed_m:
             return _rate_limited("Rate limit exceeded. Please slow down.", 60)
+
+        # Demo tenants get the tighter demo daily cap.
+        effective_qpd = limits.qpd
+        if role == "demo":
+            effective_qpd = min(effective_qpd, settings.rate_limit_demo_qpd)
+        day_key = f"rl:qpd:{tenant_id}:{int(time.time() // 86400)}"
+        allowed_d, count_d = await cache.rate_limit_check(day_key, effective_qpd, window_seconds=86400)
+        if not allowed_d:
+            return _rate_limited(
+                f"Daily query limit reached ({effective_qpd}). It resets at 00:00 UTC.", 3600
+            )
+
         response = await call_next(request)
-        response.headers["X-RateLimit-Remaining"] = str(max(0, limits.qpm - count))
+        response.headers["X-RateLimit-Remaining"] = str(max(0, limits.qpm - count_m))
+        response.headers["X-RateLimit-Remaining-Day"] = str(max(0, effective_qpd - count_d))
         return response
 
     @staticmethod
-    def _extract_tenant_id(request: Request) -> str | None:
+    def _extract_claims(request: Request) -> tuple[str | None, str | None]:
+        """Return (tenant_id, role) from a verified token, or (None, None)."""
         auth = request.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
-            return None
+            return None, None
         try:
             # Verify signature, expiry, issuer AND audience (tokens now carry
             # iss/aud — decoding without them would raise). An expired/invalid
             # token must not be trusted to attribute rate-limit usage to a tenant
-            # (it could poison another tenant's bucket); on failure -> None.
+            # (it could poison another tenant's bucket); on failure -> (None, None).
             from src.api.auth import decode_token
             payload = decode_token(auth[7:])
-            return payload.get("tenant_id")
+            return payload.get("tenant_id"), payload.get("role")
         except Exception:
-            return None
+            return None, None
 
 
 class TimingMiddleware(BaseHTTPMiddleware):

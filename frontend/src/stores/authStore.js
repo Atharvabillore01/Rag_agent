@@ -12,12 +12,13 @@ function hydrateUser(token) {
   const raw = parseJwt(token)
   if (!raw) return null
   return {
-    id:        raw.sub,
-    tenant_id: raw.tenant_id,
-    role:      raw.role,
-    email:     raw.email,
-    domain:    raw.domain || 'generic',
-    exp:       raw.exp,
+    id:            raw.sub,
+    tenant_id:     raw.tenant_id,
+    role:          raw.role,
+    email:         raw.email,
+    domain:        raw.domain || 'generic',
+    is_platform_admin: raw.is_platform_admin === true,
+    exp:           raw.exp,
   }
 }
 

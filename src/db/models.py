@@ -49,6 +49,10 @@ class UserRole(str, enum.Enum):
     editor = "editor"
     viewer = "viewer"
     demo = "demo"
+    # Clinic vertical (feature-implementation-plan §33). Lateral roles — not part
+    # of the org_admin > editor > viewer hierarchy; gated by dedicated clinic deps.
+    reception = "reception"
+    doctor = "doctor"
 
 
 class DocumentStatus(str, enum.Enum):
@@ -166,6 +170,11 @@ class User(Base):
     )
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), nullable=False, default=UserRole.viewer)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Platform super-admin (cross-tenant). A normal user (belongs to an org) that
+    # may manage ALL organizations via /platform/* (feature-implementation-plan §31).
+    is_platform_admin: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     collection_tags: Mapped[list | None] = mapped_column(JSON)  # accessible collections
 
     created_at: Mapped[datetime] = mapped_column(
@@ -770,6 +779,260 @@ class PlaybookReview(Base):
     __table_args__ = (
         Index("ix_playbook_reviews_tenant_id", "tenant_id"),
         Index("ix_playbook_reviews_tenant_created", "tenant_id", "created_at"),
+    )
+
+
+# ── Clinic vertical (feature-implementation-plan §33) ─────────────────────────
+
+class DoctorStatus(str, enum.Enum):
+    available = "available"
+    busy = "busy"
+    away = "away"
+
+
+class QueueStatus(str, enum.Enum):
+    waiting = "waiting"
+    in_progress = "in_progress"
+    done = "done"
+    cancelled = "cancelled"
+
+
+class DoctorProfile(Base):
+    """Per-doctor profile (a doctor is a User with role=doctor). Carries presence
+    status and clinic metadata."""
+
+    __tablename__ = "doctor_profiles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    specialty: Mapped[str | None] = mapped_column(String(255))
+    room: Mapped[str | None] = mapped_column(String(50))
+    status: Mapped[DoctorStatus] = mapped_column(
+        Enum(DoctorStatus), nullable=False, default=DoctorStatus.available
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (Index("ix_doctor_profiles_tenant_id", "tenant_id"),)
+
+
+class Patient(Base):
+    """A clinic patient (tenant-scoped)."""
+
+    __tablename__ = "patients"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    phone: Mapped[str | None] = mapped_column(String(40))
+    dob: Mapped[str | None] = mapped_column(String(20))
+    # free-form intake details (address, complaint, etc.)
+    details: Mapped[dict | None] = mapped_column(JSON)
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_patients_tenant_id", "tenant_id"),
+        Index("ix_patients_tenant_created", "tenant_id", "created_at"),
+    )
+
+
+class QueueEntry(Base):
+    """A patient placed in a doctor's queue."""
+
+    __tablename__ = "queue_entries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    patient_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("patients.id", ondelete="CASCADE"), nullable=False
+    )
+    # the doctor (a User with role=doctor) this patient is queued for
+    doctor_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[QueueStatus] = mapped_column(
+        Enum(QueueStatus), nullable=False, default=QueueStatus.waiting
+    )
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    called_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("ix_queue_entries_tenant_id", "tenant_id"),
+        Index("ix_queue_entries_doctor_status", "tenant_id", "doctor_user_id", "status"),
+    )
+
+
+class FollowUp(Base):
+    """A scheduled follow-up visit for a patient with a doctor."""
+
+    __tablename__ = "follow_ups"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    patient_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("patients.id", ondelete="CASCADE"), nullable=False
+    )
+    doctor_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_follow_ups_tenant_id", "tenant_id"),
+        Index("ix_follow_ups_tenant_scheduled", "tenant_id", "scheduled_at"),
+    )
+
+
+class Visit(Base):
+    """A recorded clinic visit: the doctor's typed notes (encrypted at rest) plus
+    the AI-derived insights (§33 P3). No audio/transcript — notes are typed."""
+
+    __tablename__ = "clinic_visits"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    patient_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("patients.id", ondelete="CASCADE"), nullable=False
+    )
+    doctor_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    notes: Mapped[str | None] = mapped_column(EncryptedText)   # G11: encrypted at rest
+    # {summary, symptoms[], possible_conditions[], recommended_follow_up, red_flags[]}
+    ai_insights: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_clinic_visits_patient", "tenant_id", "patient_id"),
+        Index("ix_clinic_visits_doctor_created", "tenant_id", "doctor_user_id", "created_at"),
+    )
+
+
+class PatientShare(Base):
+    """A patient shared with another doctor (team collaboration, §33 P4). The
+    shared doctor gains read access to the patient's visits/history."""
+
+    __tablename__ = "patient_shares"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    patient_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("patients.id", ondelete="CASCADE"), nullable=False
+    )
+    doctor_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    shared_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("patient_id", "doctor_user_id", name="uq_patient_share"),
+        Index("ix_patient_shares_doctor", "tenant_id", "doctor_user_id"),
+    )
+
+
+class ClinicNotification(Base):
+    """A per-recipient clinic notification (e.g. a doctor's 'send patient in').
+    Persisted for history/poll; also broadcast live over SSE (§33 P2)."""
+
+    __tablename__ = "clinic_notifications"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    recipient_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    type: Mapped[str] = mapped_column(String(50), nullable=False)
+    payload: Mapped[dict | None] = mapped_column(JSON)
+    read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_clinic_notifications_recipient", "tenant_id", "recipient_user_id", "read"),
+    )
+
+
+class ReceptionAssignment(Base):
+    """Which doctor a receptionist is assigned to. ``doctor_user_id`` NULL means
+    the receptionist is open-for-all (can queue for any doctor)."""
+
+    __tablename__ = "reception_assignments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    reception_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    doctor_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "reception_user_id", name="uq_reception_assignment"),
+        Index("ix_reception_assignments_tenant_id", "tenant_id"),
     )
 
 
